@@ -91,13 +91,14 @@ class MultiModalityDet3DInferencer(Base3DInferencer):
                 img, pcd = inputs['img'], inputs['points']
                 backend = get_file_backend(img)
                 if hasattr(backend, 'isdir') and isdir(img) and isdir(pcd):
-                    # Backends like HttpsBackend do not implement `isdir`, so
-                    # only those backends that implement `isdir` could accept
-                    # the inputs as a directory
-                    img_filename_list = list_dir_or_file(
-                        img, list_dir=False, suffix=['.png', '.jpg'])
-                    pcd_filename_list = list_dir_or_file(
-                        pcd, list_dir=False, suffix='.bin')
+                    img_filename_list = list(
+                        list_dir_or_file(
+                            img, list_dir=False, suffix=('.png', '.jpg')))
+                    img_filename_list.sort()
+                    pcd_filename_list = list(
+                        list_dir_or_file(
+                            pcd, list_dir=False, suffix='.bin'))
+                    pcd_filename_list.sort()
                     assert len(img_filename_list) == len(pcd_filename_list)
 
                     inputs = [{
@@ -110,8 +111,21 @@ class MultiModalityDet3DInferencer(Base3DInferencer):
                 inputs = [inputs]
 
             # get cam2img, lidar2cam and lidar2img from infos
-            info_list = mmengine.load(infos)['data_list']
+            # Different versions/tools may dump infos in different formats:
+            # - dict with key "data_list" (common in MMEngine/MMDet3D)
+            # - a plain list/tuple of data_info dicts
+            loaded_infos = mmengine.load(infos)
+            if isinstance(loaded_infos , dict):
+                if 'data_list' not in loaded_infos:
+                    raise ValueError(f' ERROR !!Invalid infos file format [Dict type]')
+                info_list = loaded_infos['data_list']
+            elif isinstance(loaded_infos, (list, tuple)):
+                info_list = list(loaded_infos)
+            else:
+                raise TypeError(
+                    f'Invalid infos file format: [List/Tuple type]')
             assert len(info_list) == len(inputs)
+
             for index, input in enumerate(inputs):
                 data_info = info_list[index]
                 img_path = data_info['images'][cam_type]['img_path']
