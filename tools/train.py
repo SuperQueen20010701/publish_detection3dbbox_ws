@@ -15,7 +15,7 @@ from mmdet3d.utils import replace_ceph_backend
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a 3D detector')
     parser.add_argument('config', help='train config file path')
-    parser.add_argument('--work-dir', help='the dir to save logs and models')
+    parser.add_argument('--work-dir',dest='work_dir', help='the dir to save logs and models')
     parser.add_argument(
         '--amp',
         action='store_true',
@@ -84,6 +84,7 @@ def main():
     if args.work_dir is not None:
         # update configs according to CLI args if args.work_dir is not None
         cfg.work_dir = args.work_dir
+        os.makedirs(args.work_dir, exist_ok=True)
     elif cfg.get('work_dir', None) is None:
         # use config filename as default work_dir if cfg.work_dir is None
         cfg.work_dir = osp.join('./work_dirs',

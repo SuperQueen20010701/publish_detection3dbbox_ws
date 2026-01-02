@@ -442,6 +442,7 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
     @master_only
     def draw_points_on_image(self,
                              points: Union[np.ndarray, Tensor],
+                             img :np.ndarray,
                              pts2img: np.ndarray,
                              sizes: Union[np.ndarray, int] = 3,
                              max_depth: Optional[float] = None) -> None:
@@ -457,7 +458,16 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
         """
         check_type('points', points, (np.ndarray, Tensor))
         points = tensor2ndarray(points)
-        assert self._image is not None, 'Please set image using `set_image`'
+        # Set image first if not already set, or update display
+        if not hasattr(self, '_image') or self._image is None:
+            self.set_image(img)
+        else:
+            # Update image display
+            self._image = img
+            self.ax_save.cla()
+            self.ax_save.axis(False)
+            self.ax_save.imshow(img)
+        
         projected_points = points_cam2img(points, pts2img, with_depth=True)
         depths = projected_points[:, 2]
         # Show depth adaptively consideing different scenes
@@ -475,6 +485,20 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
             alpha=0.7,
             edgecolors='none')
 
+    def save_point_on_images(self , img_save_path :str = None ,dpi :int = 300) ->None:
+        if not hasattr(sele ,'fig_save') or self.fig_save is None:
+            raise
+
+        self.fig_save_canvas.draw() # 执行图像渲染
+
+        if img_save_path is not None and  img_save_path.endswith(('.png', '.jpg', '.jpeg')):
+
+            self.fig_save.savefig(img_save_path, dpi=dpi, bbox_inches='tight', pad_inches=0, format='png')
+        else:
+            print_log(
+                    'WARN !! not valid image save path',
+                    logger='current')
+        
     # TODO: set bbox color according to palette
     @master_only
     def draw_proj_bboxes_3d(
@@ -926,6 +950,7 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
 
     # TODO: Support Visualize the 3D results from image and point cloud
     # respectively
+
     @master_only
     def add_datasample(self,
                        name: str,
@@ -1033,6 +1058,11 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
                                                        data_sample.metainfo,
                                                        vis_task, show_pcd_rgb,
                                                        palette)
+
+                # need to draw the point cloud on the image
+                assert 'img' in data_input and 'points' in data_input
+                img = data_input['img']
+                point = data_input['points']
             if 'pred_instances' in data_sample:
                 if 'img' in data_input and len(data_sample.pred_instances) > 0:
                     pred_instances = data_sample.pred_instances
@@ -1093,6 +1123,19 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
                 out_file = f'{out_file}.png'
             if drawn_img_3d is not None:
                 mmcv.imwrite(drawn_img_3d[..., ::-1], out_file)
+            if isinstance(data_input,dict) and len(data_input) == 1 :
+                assert 'img' in data_input and assert 'points' in data_input
+                img = data_input['img']
+                if isinstance(img , Tensor):
+                    img = img.permute(1,2,0).numpy()
+                    img = img[...,[0,2,1]] # bgr to rgb
+                points = data_input['points']
+                self.draw_points_on_image(points,img, data_input['lidar2img'])
+                prefix , ext =  os.path.splitext(out_file)
+                image_point_save_file_path = f"{prefix}_pcd_vis{ext}"
+                self.save_point_on_images(image_point_save_file_path)
+            else:
+                pass
             if drawn_img is not None:
                 mmcv.imwrite(drawn_img[..., ::-1],
                              out_file[:-4] + '_2d' + out_file[-4:])
