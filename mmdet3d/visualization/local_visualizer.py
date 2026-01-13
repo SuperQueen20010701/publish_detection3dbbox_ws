@@ -1124,7 +1124,8 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
             if drawn_img_3d is not None:
                 mmcv.imwrite(drawn_img_3d[..., ::-1], out_file)
             if isinstance(data_input,dict) and len(data_input) == 1 :
-                assert 'img' in data_input and assert 'points' in data_input
+                assert 'img' in data_input 
+                assert 'points' in data_input
                 img = data_input['img']
                 if isinstance(img , Tensor):
                     img = img.permute(1,2,0).numpy()

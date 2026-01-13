@@ -62,12 +62,13 @@ def parse_args():
     parser.add_argument('--pcd-topic', type=str, default='velodyne_points',
                         help='ROS topic for publishing raw pointcloud')
     parser.add_argument('--filtered-pcd-topic', type=str, default='velodyne_points_filtered',
-                        help='ROS topic for publishing filtered pointcloud (points inside predicted boxes)')
-    parser.add_argument('--no-raw-pcd', dest='publish_raw_pcd', action='store_false',
-                        help='Disable publishing raw pointcloud')
-    parser.set_defaults(publish_raw_pcd=True)
-    parser.add_argument('--publish-filtered-pcd', dest='publish_filtered_pcd', action='store_true',
-                        help='Enable publishing filtered pointcloud (points inside predicted boxes)')
+                        help='ROS topic for publishing filtered pointcloud (points outside predicted boxes, removed points inside boxes)')
+    parser.add_argument('--publish-raw-pcd', dest='publish_raw_pcd', action='store_true',
+                        help='Enable publishing raw pointcloud')
+    parser.set_defaults(publish_raw_pcd=False)  # Default: don't publish raw PCD
+    parser.add_argument('--no-filtered-pcd', dest='publish_filtered_pcd', action='store_false',
+                        help='Disable publishing filtered pointcloud (points outside predicted boxes, removed points inside boxes)')
+    parser.set_defaults(publish_filtered_pcd=True)  # Default: publish filtered PCD (points outside boxes)
     # runtime flags (keep backward-compatible aliases)
     parser.add_argument('--no-visualize', dest='no_visualize',
                         action='store_true', help='Disable visualization function')
@@ -254,18 +255,26 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer):
                                     pcd: np.ndarray,
                                     data_sample: Det3DDataSample,
                                     score_thr: float) -> Optional[np.ndarray]:
-        """Return points inside predicted 3D boxes (LiDAR coord only)."""
+        """Return points OUTSIDE predicted 3D boxes (remove points inside boxes, LiDAR coord only)."""
         if pcd is None or data_sample is None:
+            print_log('DEBUG: _filter_points_in_pred_boxes: pcd or data_sample is None', 
+                      logger='current', level=logging.DEBUG)
             return None
         if not hasattr(data_sample, 'pred_instances_3d'):
+            print_log('DEBUG: _filter_points_in_pred_boxes: data_sample has no pred_instances_3d', 
+                      logger='current', level=logging.DEBUG)
             return None
 
         pred_instances_3d = data_sample.pred_instances_3d
         if pred_instances_3d is None or not hasattr(pred_instances_3d, 'bboxes_3d'):
+            print_log('DEBUG: _filter_points_in_pred_boxes: pred_instances_3d is None or has no bboxes_3d', 
+                      logger='current', level=logging.DEBUG)
             return None
 
         bboxes_3d = getattr(pred_instances_3d, 'bboxes_3d', None)
         if bboxes_3d is None:
+            print_log('DEBUG: _filter_points_in_pred_boxes: bboxes_3d is None', 
+                      logger='current', level=logging.DEBUG)
             return None
 
         # Only support LiDAR boxes here (points are in velodyne frame).
@@ -277,6 +286,7 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer):
             return None
 
         # Score filtering (keep consistent with bbox publish threshold)
+        num_boxes_before = len(bboxes_3d)
         if hasattr(pred_instances_3d, 'scores_3d'):
             scores_3d = pred_instances_3d.scores_3d
             keep_box = scores_3d > float(score_thr)
@@ -285,15 +295,50 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer):
             except Exception:
                 # Fallback: if indexing fails for some structure variant, skip score filtering.
                 pass
+        num_boxes_after = len(bboxes_3d)
+        print_log(f'DEBUG: Filtering with {num_boxes_before} boxes (after score_thr={score_thr}: {num_boxes_after} boxes)', 
+                  logger='current', level=logging.DEBUG)
 
         if bboxes_3d.tensor.numel() == 0:
+            print_log('DEBUG: _filter_points_in_pred_boxes: No boxes after filtering', 
+                      logger='current', level=logging.DEBUG)
             return pcd[:0].copy()
+
+        # Log box information for debugging
+        bboxes_tensor = bboxes_3d.tensor.cpu().numpy()
+        for i, box in enumerate(bboxes_tensor):
+            center = box[:3]
+            dims = box[3:6]
+            yaw = box[6]
+            print_log(f'INFO: Box {i+1}: center=({center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}), '
+                     f'dims=({dims[0]:.2f}, {dims[1]:.2f}, {dims[2]:.2f}), yaw={yaw:.2f}',
+                     logger='current', level=logging.INFO)
 
         # Compute points-in-box mask
         pts_xyz = torch.from_numpy(pcd[:, :3]).to(device=bboxes_3d.tensor.device, dtype=torch.float32)
         in_any = bboxes_3d.points_in_boxes_all(pts_xyz).to(torch.bool).any(dim=1)
         in_any_np = in_any.detach().cpu().numpy()
-        return pcd[in_any_np]
+        
+        # Invert mask to get points OUTSIDE boxes (remove points inside boxes)
+        out_any_np = ~in_any_np
+        
+        num_points_inside = in_any_np.sum()
+        num_points_outside = out_any_np.sum()
+        num_points_total = len(pcd)
+        filter_ratio_inside = (num_points_inside / num_points_total * 100) if num_points_total > 0 else 0.0
+        filter_ratio_outside = (num_points_outside / num_points_total * 100) if num_points_total > 0 else 0.0
+        
+        # Count points per box
+        points_per_box = bboxes_3d.points_in_boxes_all(pts_xyz).to(torch.bool).sum(dim=0).cpu().numpy()
+        for i, count in enumerate(points_per_box):
+            print_log(f'INFO: Box {i+1} contains {count} points (will be removed)', 
+                     logger='current', level=logging.INFO)
+        
+        print_log(f'INFO: Removing {num_points_inside} points inside {num_boxes_after} boxes '
+                 f'({filter_ratio_inside:.2f}%), keeping {num_points_outside} points outside '
+                 f'({filter_ratio_outside:.2f}% out of {num_points_total} total points)', 
+                 logger='current', level=logging.INFO)
+        return pcd[out_any_np]
 
     def _inputs_to_dict(self, origin_inputs: InputsType, proc_pair_count: int = 0) -> Dict:
         for single_input in origin_inputs:
@@ -406,7 +451,7 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer):
             cam_dir = camera_type
             if img_out_dir:
                 os.makedirs(os.path.join(img_out_dir, 'vis_camera', cam_dir), exist_ok=True)
-            
+                os.makedirs(os.path.join(img_out_dir,'filtered_pcd'),exist_ok = True)
             # Handle visualization and/or saving pred to image
             if current_origin_input is not None:
                 should_save_vis = (self.vis_frame_count % vis_save_interval == 0)
@@ -490,19 +535,29 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer):
                                  logger='current', level=logging.WARNING)
 
                     # Publish raw pointcloud (backward-compatible default)
-                    if pcd is not None and getattr(self, 'publish_raw_pcd', True):
+                    if pcd is not None and getattr(self, 'publish_raw_pcd', False):
                         self.pubPcdMsg(pcd)
                         print_log(f'INFO !! raw pcd published (shape: {pcd.shape})',
                                   logger='current', level=logging.INFO)
 
-                    # Publish filtered pointcloud (points inside predicted boxes)
-                    if pcd is not None and getattr(self, 'publish_filtered_pcd', False):
+                    # Publish filtered pointcloud (points OUTSIDE predicted boxes, removed points inside boxes)
+                    if pcd is not None and getattr(self, 'publish_filtered_pcd', True):
                         filtered = self._filter_points_in_pred_boxes(
                             pcd=pcd, data_sample=pred, score_thr=pred_score_thr)
-                        if filtered is not None:
+                        if filtered is not None and len(filtered) > 0:
+                            # Fix: publish_filtered_pcd only accepts one parameter (pcd)
                             self.pubFilteredPcdMsg(filtered)
-                            print_log(f'INFO !! filtered pcd published (shape: {filtered.shape})',
+                            # save filtered pcd to file
+                            filtered_pcd_path = os.path.join(self.out_pcd_img_path, 'filtered_pcd', f'{idx:06d}.bin') #  f'{str(idx).zfill(6)}.bin'
+                            np.save(filtered_pcd_path, filtered)
+                            print_log(f'INFO !! filtered pcd published (points outside boxes, shape: {filtered.shape})',
                                       logger='current', level=logging.INFO)
+                        elif filtered is not None and len(filtered) == 0:
+                            print_log(f'WARNING !! filtered pcd is empty (all points are inside boxes)',
+                                      logger='current', level=logging.WARNING)
+                        else:
+                            print_log(f'WARNING !! filtered pcd is None (filtering failed)',
+                                      logger='current', level=logging.WARNING)
                 except Exception as e:
                     print_log(f'ERROR !! Failed to publish pcd: {e}', 
                              logger='current', level=logging.WARNING)
@@ -770,11 +825,11 @@ class Det3DRosPublishNode:
 def run(init_args: dict, call_args: dict):
     try:
         out_pred_img_path = call_args.pop('img_out_dir')
-        pred_score_thr = float(call_args.get('pred_score_thr', 0.3))
-        pcd_topic = str(call_args.get('pcd_topic', 'velodyne_points'))
-        filtered_pcd_topic = str(call_args.get('filtered_pcd_topic', 'velodyne_points_filtered'))
-        publish_raw_pcd = bool(call_args.get('publish_raw_pcd', True))
-        publish_filtered_pcd = bool(call_args.get('publish_filtered_pcd', False))
+        pred_score_thr = float(call_args.get('pred_score_thr', 0.3))  # Keep in call_args for run_inference
+        pcd_topic = str(call_args.pop('pcd_topic', 'velodyne_points'))
+        filtered_pcd_topic = str(call_args.pop('filtered_pcd_topic', 'velodyne_points_filtered'))
+        publish_raw_pcd = bool(call_args.pop('publish_raw_pcd', False))
+        publish_filtered_pcd = bool(call_args.pop('publish_filtered_pcd', True))
         inferencer = MultiModalityDetectionInferencerNode(**init_args)
         inferencer._init_model_pipeline(
             out_pcd_img_path=out_pred_img_path,
