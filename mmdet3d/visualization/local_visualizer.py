@@ -486,7 +486,7 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
             edgecolors='none')
 
     def save_point_on_images(self , img_save_path :str = None ,dpi :int = 300) ->None:
-        if not hasattr(sele ,'fig_save') or self.fig_save is None:
+        if not hasattr(self ,'fig_save') or self.fig_save is None:
             raise
 
         self.fig_save_canvas.draw() # 执行图像渲染
