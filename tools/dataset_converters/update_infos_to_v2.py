@@ -13,16 +13,8 @@ import copy
 import time
 from os import path as osp
 from pathlib import Path
-
-import mmengine
 import numpy as np
-from nuscenes.nuscenes import NuScenes
-
-from mmdet3d.datasets.convert_utils import (convert_annos,
-                                            get_kitti_style_2d_boxes,
-                                            get_nuscenes_2d_boxes)
-from mmdet3d.datasets.utils import convert_quaternion_to_matrix
-from mmdet3d.structures import points_cam2img
+import mmengine
 
 
 def get_empty_instance():
@@ -1136,18 +1128,6 @@ def parse_args():
 def update_pkl_infos(dataset, out_dir, pkl_path):
     if dataset.lower() == 'kitti':
         update_kitti_infos(pkl_path=pkl_path, out_dir=out_dir)
-    elif dataset.lower() == 'waymo':
-        update_waymo_infos(pkl_path=pkl_path, out_dir=out_dir)
-    elif dataset.lower() == 'scannet':
-        update_scannet_infos(pkl_path=pkl_path, out_dir=out_dir)
-    elif dataset.lower() == 'sunrgbd':
-        update_sunrgbd_infos(pkl_path=pkl_path, out_dir=out_dir)
-    elif dataset.lower() == 'lyft':
-        update_lyft_infos(pkl_path=pkl_path, out_dir=out_dir)
-    elif dataset.lower() == 'nuscenes':
-        update_nuscenes_infos(pkl_path=pkl_path, out_dir=out_dir)
-    elif dataset.lower() == 's3dis':
-        update_s3dis_infos(pkl_path=pkl_path, out_dir=out_dir)
     else:
         raise NotImplementedError(f'Do not support convert {dataset} to v2.')
 

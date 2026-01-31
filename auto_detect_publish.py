@@ -20,13 +20,13 @@ import mmengine
 import torch
 from pathlib import Path
 # ros publish
-import rospy
-from sensor_msgs.msg import PointCloud2,PointField
-from jsk_recognition_msgs.msg import BoundingBox, BoundingBoxArray
-from tf.transformations import quaternion_from_euler
-from std_msgs.msg import Header
-from geometry_msgs.msg import Point, Quaternion, Vector3
-from visualization_msgs.msg import Marker, MarkerArray
+# import rospy
+# from sensor_msgs.msg import PointCloud2,PointField
+# from jsk_recognition_msgs.msg import BoundingBox, BoundingBoxArray
+# from tf.transformations import quaternion_from_euler
+# from std_msgs.msg import Header
+# from geometry_msgs.msg import Point, Quaternion, Vector3
+# from visualization_msgs.msg import Marker, MarkerArray
 # detection inferencer
 try:
     from mmdet3d.apis import (
@@ -74,6 +74,10 @@ def save_pointcloud_ply(points: np.ndarray, filepath: str) -> None:
     if points.shape[1] < 3:
         raise ValueError(f"Points must have at least 3 dimensions (x, y, z), got {points.shape[1]}")
     
+    dirname = os.path.dirname(filepath)
+    if dirname: 
+        os.makedirs(dirname, exist_ok=True)
+    
     num_points = len(points)
     has_intensity = points.shape[1] >= 4
     
@@ -120,16 +124,15 @@ def parse_args():
     parser.set_defaults(publish_raw_pcd=False)  # Default: don't publish raw PCD
     parser.add_argument('--publish-filtered-pcd', dest='publish_filtered_pcd', action='store_true',
                         help='Disable publishing filtered pointcloud (points outside predicted boxes, removed points inside boxes)')
-    parser.set_defaults(publish_filtered_pcd=True)  # Default: publish filtered PCD (points outside boxes)
+    parser.set_defaults(publish_filtered_pcd=False)  # Default: publish filtered PCD (points outside boxes)
     # runtime flags (keep backward-compatible aliases)
     parser.add_argument('--no-visualize', dest='no_visualize',
                         action='store_true', help='Disable visualization function')
     parser.add_argument('--no-postprocess', dest='no_postprocess',
                         action='store_true', help='Disable postprocess function')
-    parser.add_argument('--fp16', action='store_true',help='Enable autocast fp16 inference (CUDA only).')
     parser.add_argument('--show', action='store_true',
                         help='Show visualization windows (requires GUI).')
-    parser.add_argument('--vis-save-interval', dest = 'vis_save_interval',type=int, default=1,
+    parser.add_argument('--vis-save-interval', dest = 'vis_save_interval',type=int, default=50,
                         help='Save visualization every N frames (1=every frame, 10=every 10th frame). Default: 1')
     parser.add_argument('--vis-wait-time',dest = 'vis_wait_time', type=float, default=0.0,
                         help='Wait time for visualization window (seconds). 0.0 for minimal blocking. Default: 0.0')
@@ -137,7 +140,7 @@ def parse_args():
 
     # If user did not specify img_out_dir explicitly, reuse out_dir.
     if not call_args.get('img_out_dir'):
-        call_args['img_out_dir'] = '/kitti_data/fast_result_pred'
+        call_args['img_out_dir'] = '/src/mmdetection3d/publish_detection3dbbox_ws/smoke_dir'
 
     if call_args.get('pcd_root') is None and call_args.get('img_root') is None:
         raise ValueError('pcd_root or img_root is required')
@@ -152,13 +155,12 @@ def parse_args():
     call_args.pop('pcd_root', None)
     call_args.pop('img_root', None)
     call_args.pop('infos', None)
-    # Decide device (and validate fp16)
     cuda_ok = False
     try:
         cuda_ok = torch.cuda.is_available()
     except Exception:
         cuda_ok = False
-
+    
     init_args = {}
     init_args['model'] = call_args.pop('model')
     init_args['weights'] = call_args.pop('weights')
@@ -166,15 +168,9 @@ def parse_args():
 
     if not cuda_ok:
         init_args['device'] = 'cpu'
-        if call_args.get('fp16'):
-            print_log(
-                'WARNING: --fp16 requested but CUDA is not available. Disable fp16.',
-                logger='current', level=logging.WARNING)
-            call_args['fp16'] = False
     else:
         init_args['device'] = requested_device
     return init_args, call_args
-
 
 class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
                                 LidarDet3DInferencer,
@@ -229,7 +225,7 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
 
         self.num_of_proc_count = 0
         self.ros_publisher_node = None
-        self.ros_enabled = True
+        self.ros_enabled = False
         self.makePublishBbox = None
         self.pubBboxMsg = None
         self.makePublishPcd = None
@@ -371,34 +367,35 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
                              filtered_pcd_topic: str = 'velodyne_points_filtered',
                              publish_raw_pcd: bool = False,
                              publish_filtered_pcd: bool = True,
+                             enabled_ros: bool = False,
                              **kwargs) -> None:
         if self.model is not  None and self.cfg is None:
             self.cfg = self.load_cfg(self.model)
         else:
             print_log(f'DEBUG: Config and Model load successfully ', logger='current', level=logging.INFO)
-
+        self.ros_enabled = bool(enabled_ros)
         self.load_param_from_cfg()
         self.publish_raw_pcd = bool(publish_raw_pcd)
         self.publish_filtered_pcd = bool(publish_filtered_pcd)
-        if self.ros_enabled and self.ros_topic is not None:
-            self.ros_publisher_node = Det3DRosPublishNode(
-                topic=self.ros_topic,
-                frame_id='velodyne',
-                pred_score_thr=float(pred_score_thr),
-                ros_node_name='detection_bbox_publisher',
-                queue_size=10,
-                latch=True,
-                enabled_ros=self.ros_enabled,
-                pcd_topic=str(pcd_topic),
-                filtered_pcd_topic=str(filtered_pcd_topic)
-            )
+        # if self.ros_enabled and self.ros_topic is not None:
+        #     self.ros_publisher_node = Det3DRosPublishNode(
+        #         topic=self.ros_topic,
+        #         frame_id='velodyne',
+        #         pred_score_thr=float(pred_score_thr),
+        #         ros_node_name='detection_bbox_publisher',
+        #         queue_size=10,
+        #         latch=True,
+        #         enabled_ros=self.ros_enabled,
+        #         pcd_topic=str(pcd_topic),
+        #         filtered_pcd_topic=str(filtered_pcd_topic)
+        #     )
 
-        if self.ros_publisher_node is not None:
-            self.makePublishBbox = self.ros_publisher_node.make_publish_bbox
-            self.pubBboxMsg = self.ros_publisher_node.publish_bbox  # Fix: should be publish_bbox, not make_publish_bbox
-            self.pubPcdMsg = self.ros_publisher_node.publish_pcd
-            self.pubFilteredPcdMsg = self.ros_publisher_node.publish_filtered_pcd
-            self.rate = self.ros_publisher_node._rate
+        # if self.ros_publisher_node is not None:
+        #     self.makePublishBbox = self.ros_publisher_node.make_publish_bbox
+        #     self.pubBboxMsg = self.ros_publisher_node.publish_bbox  # Fix: should be publish_bbox, not make_publish_bbox
+        #     self.pubPcdMsg = self.ros_publisher_node.publish_pcd
+        #     self.pubFilteredPcdMsg = self.ros_publisher_node.publish_filtered_pcd
+        #     self.rate = self.ros_publisher_node._rate
         if out_pcd_img_path is not None:
             self.out_pcd_img_path = out_pcd_img_path
         else:
@@ -414,16 +411,6 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
                                     data_sample: Det3DDataSample,
                                     score_thr: float,
                                     lidar2cam: Optional[Union[np.ndarray, torch.Tensor]] = None) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """Return points OUTSIDE predicted 3D boxes (remove points inside boxes, LiDAR coord only).
-        
-        Args:
-            pcd: Point cloud in LiDAR coordinates
-            data_sample: Detection result data sample
-            score_thr: Score threshold for filtering boxes
-            lidar2cam: Optional lidar2cam transformation matrix (for mono detection)
-        """
-        print_log(f'DEBUG: _filter_points_in_pred_boxes called - pcd shape={pcd.shape if pcd is not None else None}, data_sample={data_sample is not None}',
-                 logger='current', level=logging.INFO)
         
         if pcd is None or data_sample is None:
             print_log('DEBUG: _filter_points_in_pred_boxes: pcd or data_sample is None', 
@@ -449,30 +436,21 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
         print_log(f'INFO: _filter_points_in_pred_boxes: bboxes_3d type={type(bboxes_3d).__name__}, len={len(bboxes_3d)}, lidar2cam provided={lidar2cam is not None}',
                  logger='current', level=logging.INFO)
 
-        # Convert CameraInstance3DBoxes to LiDARInstance3DBoxes if needed
-        # (points are in velodyne/LiDAR frame, so boxes need to be in LiDAR frame too)
         if isinstance(bboxes_3d, CameraInstance3DBoxes):
-            # Try to get lidar2cam from parameter, metainfo, or input
             if lidar2cam is None:
                 if hasattr(data_sample, 'metainfo') and data_sample.metainfo is not None:
-                    # Try to get from metainfo
                     if 'lidar2cam' in data_sample.metainfo:
                         lidar2cam = data_sample.metainfo['lidar2cam']
             
-            # If we have lidar2cam, convert boxes to LiDAR frame
             if lidar2cam is not None:
                 try:
                     lidar2cam = np.array(lidar2cam) if not isinstance(lidar2cam, np.ndarray) else lidar2cam
-                    # Ensure 4x4 matrix
                     if lidar2cam.shape == (3, 4):
                         lidar2cam_4x4 = np.eye(4, dtype=lidar2cam.dtype)
                         lidar2cam_4x4[:3, :] = lidar2cam
                         lidar2cam = lidar2cam_4x4
-                    # Convert to tensor
                     if isinstance(lidar2cam, np.ndarray):
                         lidar2cam = torch.from_numpy(lidar2cam).float()
-                    # Convert camera boxes to LiDAR boxes
-                    # Note: convert_to expects cam2lidar (inverse of lidar2cam)
                     cam2lidar = torch.inverse(lidar2cam)
                     bboxes_3d = bboxes_3d.convert_to(Box3DMode.LIDAR, cam2lidar, correct_yaw=True)
                     print_log(f'Converted CameraInstance3DBoxes to LiDARInstance3DBoxes for point cloud filtering',
@@ -498,7 +476,6 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
                 logger='current', level=logging.WARNING)
             return None, None
 
-        # Score filtering (keep consistent with bbox publish threshold)
         num_boxes_before = len(bboxes_3d)
         if hasattr(pred_instances_3d, 'scores_3d'):
             scores_3d = pred_instances_3d.scores_3d
@@ -543,14 +520,6 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
         
         # Count points per box
         points_per_box = bboxes_3d.points_in_boxes_all(pts_xyz).to(torch.bool).sum(dim=0).cpu().numpy()
-        for i, count in enumerate(points_per_box):
-            print_log(f'INFO: Box {i+1} contains {count} points (will be removed)', 
-                     logger='current', level=logging.INFO)
-        
-        print_log(f'INFO: Removing {num_points_inside} points inside {num_boxes_after} boxes '
-                 f'({filter_ratio_inside:.2f}%), keeping {num_points_outside} points outside '
-                 f'({filter_ratio_outside:.2f}% out of {num_points_total} total points)', 
-                 logger='current', level=logging.INFO)
         return pcd[out_any_np],pcd[in_any_np]
 
     def _inputs_to_list(self,
@@ -588,12 +557,14 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
             infos = inputs.pop('infos')
 
             if isinstance(inputs.get('img'), str):
-                img = inputs['img']
-                backend = get_file_backend(img)
-                if hasattr(backend, 'isdir') and isdir(img):
-                    filename_list = list_dir_or_file(img, list_dir=False)
+                img_root = inputs['img']
+                pcd_root = img_root.replace('image_2','velodyne')
+                backend = get_file_backend(img_root)
+                if hasattr(backend, 'isdir') and isdir(img_root) and isdir(pcd_root):
+                    filename_list = list_dir_or_file(img_root, list_dir=False)
                     inputs = [{
-                        'img': join_path(img, filename)
+                        'img': join_path(img_root, filename),
+                        'points': join_path(pcd_root, filename.replace('.png', '.bin')),
                     } for filename in filename_list]
 
             if not isinstance(inputs, (list, tuple)):
@@ -611,8 +582,7 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
                 raise TypeError(f'Invalid infos file format: expected dict or list, got {type(loaded_infos)}')
             
             if len(info_list) != len(inputs):
-                print_log(f'WARNING: Number of inputs ({len(inputs)}) does not match info_list length ({len(info_list)}). '
-                         f'Will try to match by filename.', logger='current', level=logging.WARNING)
+                raise ValueError(f'Number of inputs ({len(inputs)}) does not match info_list length ({len(info_list)}).')
 
             # Match inputs with info_list by filename
             matched_inputs = []
@@ -636,47 +606,55 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
                                 data_info = info_item
                                 break
                     
-                    # If no exact match, try index-based matching
+                    # Check if we found a matching info entry
                     if data_info is None:
-                        idx = len(matched_inputs)
-                        if idx < len(info_list):
-                            data_info = info_list[idx]
-                            print_log(f'WARNING: No exact filename match for {img_basename}, using info entry at index {idx}',
-                                     logger='current', level=logging.WARNING)
+                        # Try to provide helpful error message
+                        available_cameras = set()
+                        for info_item in info_list:
+                            if 'images' in info_item and info_item['images'] is not None:
+                                available_cameras.update(info_item['images'].keys())
+                        if available_cameras:
+                            raise ValueError(f'Cannot find matching info entry for image {img_basename}. '
+                                           f'Camera type {cam_type} not found. Available cameras: {list(available_cameras)}')
                         else:
                             raise ValueError(f'Cannot find matching info entry for image {img_basename}. '
-                                           f'Available info entries: {len(info_list)}')
-                
-                # Extract camera parameters
-                if cam_type not in data_info.get('images', {}):
-                    raise ValueError(f'Camera type {cam_type} not found in info file. '
-                                   f'Available cameras: {list(data_info.get("images", {}).keys())}')
-                
-                cam_info = data_info['images'][cam_type]
-                cam2img = np.asarray(cam_info['cam2img'], dtype=np.float32)
-                lidar2cam = np.asarray(cam_info.get('lidar2cam', np.eye(4)[:3, :]), dtype=np.float32)
-                
-                if 'lidar2img' in cam_info:
-                    lidar2img = np.asarray(cam_info['lidar2img'], dtype=np.float32)
-                else:
-                    # Compute lidar2img from cam2img and lidar2cam
-                    if lidar2cam.shape == (3, 4):
-                        lidar2cam_4x4 = np.eye(4, dtype=np.float32)
-                        lidar2cam_4x4[:3, :] = lidar2cam
-                        lidar2cam = lidar2cam_4x4
-                    if cam2img.shape == (3, 3):
-                        cam2img_4x4 = np.eye(4, dtype=np.float32)
-                        cam2img_4x4[:3, :3] = cam2img
-                        cam2img = cam2img_4x4
-                    elif cam2img.shape == (3, 4):
-                        cam2img_4x4 = np.eye(4, dtype=np.float32)
-                        cam2img_4x4[:3, :] = cam2img
-                        cam2img = cam2img_4x4
-                    lidar2img = cam2img @ lidar2cam
-                
-                input_item['cam2img'] = cam2img
-                input_item['lidar2cam'] = lidar2cam
-                input_item['lidar2img'] = lidar2img
+                                           f'No camera information found in info file. Available info entries: {len(info_list)}')
+                    
+                    # Check if images field exists and is not None
+                    if 'images' not in data_info or data_info['images'] is None:
+                        raise ValueError(f'Info entry for image {img_basename} has no "images" field or it is None')
+                    
+                    if cam_type not in data_info['images']:
+                        available_cameras = list(data_info['images'].keys())
+                        raise ValueError(f'Camera type {cam_type} not found in info entry for image {img_basename}. '
+                                       f'Available cameras: {available_cameras}')
+                    
+                    cam_info = data_info['images'][cam_type]
+                    cam2img = np.asarray(cam_info['cam2img'], dtype=np.float32)
+                    lidar2cam = np.asarray(cam_info.get('lidar2cam', np.eye(4)[:3, :]), dtype=np.float32)
+                    
+                    if 'lidar2img' in cam_info:
+                        lidar2img = np.asarray(cam_info['lidar2img'], dtype=np.float32)
+                    else:
+                        # Compute lidar2img from cam2img and lidar2cam
+                        if lidar2cam.shape == (3, 4):
+                            lidar2cam_4x4 = np.eye(4, dtype=np.float32)
+                            lidar2cam_4x4[:3, :] = lidar2cam
+                            lidar2cam = lidar2cam_4x4
+                        if cam2img.shape == (3, 3):
+                            cam2img_4x4 = np.eye(4, dtype=np.float32)
+                            cam2img_4x4[:3, :3] = cam2img
+                            cam2img = cam2img_4x4
+                        elif cam2img.shape == (3, 4):
+                            cam2img_4x4 = np.eye(4, dtype=np.float32)
+                            cam2img_4x4[:3, :] = cam2img
+                            cam2img = cam2img_4x4
+                        lidar2img = cam2img @ lidar2cam  # lidar -> camera
+                    
+                    input_item['cam2img'] = cam2img
+                    input_item['lidar2cam'] = lidar2cam
+                    input_item['lidar2img'] = lidar2img
+
                 matched_inputs.append(input_item)
             
             return matched_inputs
@@ -802,11 +780,9 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
 
         no_visualize = bool(kwargs.pop('no_visualize', kwargs.pop('no-visualize', False)))
         no_postprocess = bool(kwargs.pop('no_postprocess', kwargs.pop('no-postprocess', False)))
-        fp16 = bool(kwargs.pop('fp16', False))
         pred_score_thr = float(kwargs.pop('pred_score_thr', 0.3))
 
         show = bool(kwargs.pop('show', False))
-        fp16_enabled = fp16
 
         vis_save_interval = int(kwargs.pop('vis_save_interval',self.vis_save_interval))
         vis_wait_time = float(kwargs.pop('vis_wait_time',self.vis_wait_time))
@@ -833,18 +809,7 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
                 continue
             self.num_of_proc_count = idx + 1
             with torch.no_grad():
-                if fp16_enabled and torch.cuda.is_available():
-                    try:
-                        with torch.cuda.amp.autocast(dtype=torch.float16):
-                            pred = self.forward(single_data, **forward_kwargs)
-                    except RuntimeError as e:
-                            print_log(
-                                'WARNING: fp16 requested but MMCV does not support fp16 )',
-                                logger='current', level=logging.WARNING)
-                            fp16_enabled = False
-                            pred = self.forward(single_data, **forward_kwargs)
-                else:
-                    pred = self.forward(single_data, **forward_kwargs)
+                pred = self.forward(single_data, **forward_kwargs)
 
             # Normalize pred to a single Det3DDataSample for this frame.
             if isinstance(pred, (list, tuple)):
@@ -856,75 +821,61 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
                     print_log(f'WARNING: pred list length={len(pred)}; use pred[0]',
                               logger='current', level=logging.WARNING)
                 pred = pred[0]
-
             current_origin_input = origin_inputs[idx] if idx < len(origin_inputs) else None
             visualization = None
             
-            # For mono detection, automatically infer point cloud path from image path
-            # This allows point cloud filtering/denoising even in mono detection mode
-            if self.use_camera and not self.use_lidar and current_origin_input is not None:
-                if isinstance(current_origin_input, dict):
-                    img_path = current_origin_input.get('img')
-                    if img_path and 'points' not in current_origin_input:
-                        # Try to infer point cloud path from image path (KITTI format)
+            if current_origin_input is not None:
+                img_path = current_origin_input.get('img') if 'img' in current_origin_input else None
+                pcd_path = current_origin_input.get('points') if 'points' in current_origin_input else None
+                # mono only | lidar only | multi modality (origin input -> contain : image and point cloud reduced)
+                if img_path is None :
+                    if os.path.exists(pcd_path):
+                        # inference -> velodyne -> velodyne reduce 
+                        pcd_path = pcd_path.replace('velodyne', 'velodyne_reduced')
+                        if os.path.exists(pcd_path):
+                            img_path = pcd_path.replace('velodyne_reduced', 'image_2').replace('.bin', '.png')
+                            current_origin_input['img'] = img_path
+                            print_log(f'[Multi-modality] [run_inference] Add image path to origin input',
+                                     logger='current', level=logging.INFO)
+                elif pcd_path is None :
+                    if img_path is not None:
                         if isinstance(img_path, str):
-                            # Try KITTI format: image_2 -> velodyne
                             if 'image_2' in img_path:
-                                pcd_path = img_path.replace('image_2', 'velodyne').replace('.png', '.bin').replace('.jpg', '.bin')
+                                pcd_path = img_path.replace('image_2', 'velodyne_reduced').replace('.png', '.bin')
                                 if os.path.exists(pcd_path):
                                     current_origin_input['points'] = pcd_path
-                                    print_log(f'Inferred point cloud path for noise removal: {pcd_path}',
+                                    print_log(f'[Multi-modality] [run_inference] Add point cloud path to origin input',
                                              logger='current', level=logging.INFO)
-                                else:
-                                    # Try alternative: replace image directory with velodyne
-                                    img_dir = os.path.dirname(img_path)
-                                    img_basename = os.path.basename(img_path)
-                                    pcd_basename = img_basename.replace('.png', '.bin').replace('.jpg', '.bin')
-                                    # Try to find velodyne directory at same level as image directory
-                                    parent_dir = os.path.dirname(img_dir)
-                                    velodyne_dir = os.path.join(parent_dir, 'velodyne')
-                                    if not os.path.exists(velodyne_dir):
-                                        # Try velodyne_reduced
-                                        velodyne_dir = os.path.join(parent_dir, 'velodyne_reduced')
-                                    if os.path.exists(velodyne_dir):
-                                        pcd_path = os.path.join(velodyne_dir, pcd_basename)
-                                        if os.path.exists(pcd_path):
-                                            current_origin_input['points'] = pcd_path
-                                            print_log(f'Inferred point cloud path for noise removal: {pcd_path}',
-                                                     logger='current', level=logging.INFO)
-            
+                elif img_path is not None and pcd_path is not None:
+                    pass
+                else:
+                    print_log(f'WARNING !! img_path and pcd_path is None',
+                              logger='current', level=logging.WARNING)
+                    continue
+
             # Prepare output directory for saving images
-            img_out_dir = self.out_pcd_img_path or '/kitti_data/fast_result_pred'
+            img_out_dir = self.out_pcd_img_path 
             cam_dir = camera_type
             if img_out_dir:
                 os.makedirs(os.path.join(img_out_dir, 'vis_camera', cam_dir), exist_ok=True)
                 os.makedirs(os.path.join(img_out_dir,'filtered_pcd'),exist_ok = True)
-                os.makedirs(os.path.join(img_out_dir,'no_filter_pcd'),exist_ok=True)
-                os.makedirs(os.path.join(img_out_dir,'raw_pcd'),exist_ok = True)
             # Handle visualization and/or saving pred to image
             if current_origin_input is not None:
-                should_save_vis = (self.vis_frame_count % vis_save_interval == 0)
+                should_save_vis = (self.vis_frame_count % vis_save_interval == 0)  # save point cloud to image (interval)
                 self.vis_frame_count += 1
                 
                 if not no_visualize and should_save_vis:
                     # Full visualization mode: save visualization images
                     visualize_kwargs['img_out_dir'] = img_out_dir
                     visualize_kwargs['wait_time'] = vis_wait_time
-                    visualize_kwargs['show'] = show
+                    visualize_kwargs['draw_pred'] = True # use for point cloud project to iamge
+                    visualize_kwargs['return_vis'] = True # return visualization result
+                    visualize_kwargs['no_save_vis'] = False 
                     try:
-                        # Use the overridden visualize() method which routes to correct inferencer
                         visualization = self.visualize(
-                            [current_origin_input], [pred], **visualize_kwargs)
+                            [current_origin_input], [pred], show=False, **visualize_kwargs)
                     except AttributeError as e:
-                        if 'convert_to_pinhole_camera_parameters' in str(e):
-                            print_log(
-                                'WARNING: Open3D show mode failed (likely headless environment). '
-                                'Fallback to show=False and continue saving images.',
-                                logger='current', level=logging.WARNING)
-                            visualization = self.visualize(
-                                [current_origin_input], [pred], show=False, **visualize_kwargs)
-                        else:
-                            raise
+                        raise
                 elif no_visualize: # for no visualization occassion
                     # No visualization mode: only save pred to image (draw pred on image)
                     visualize_kwargs['img_out_dir'] = img_out_dir
@@ -951,37 +902,31 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
             # Publish PCD data
             if current_origin_input is not None:
                 try:
-                    # this need to make sure the pcd data according to the image data to filter and publish 
-                    # if is image detection
-                    if self.use_lidar == False and self.use_camera:
-                        imgs_data = current_origin_input.get('img') if isinstance(current_origin_input, dict) else None
-                        if isinstance(imgs_data,str) and 'image_2' in imgs_data.lower():
-                            # Replace image_2 with velodyne and change extension to .bin
-                            pcd_path = imgs_data.replace('image_2', 'velodyne')
-                            # Replace file extension from .png or .jpg to .bin
-                            base, ext = os.path.splitext(pcd_path)
-                            if ext.lower() in ['.png', '.jpg', '.jpeg']:
-                                pcd_path = base + '.bin'
-                    else:
-                        pcd_path = current_origin_input.get('points') if isinstance(current_origin_input, dict) else None
+                    pcd_path = current_origin_input.get('points') if isinstance(current_origin_input, dict) else None
                     pcd = None
                     if  isinstance(pcd_path, str):
                         pcd_path = str(Path(pcd_path).resolve())
                         if 'velodyne_reduced' in pcd_path.lower():
                             pcd_path = pcd_path.replace("velodyne_reduced", "velodyne")
                         # Ensure the path ends with .bin
-                        if not pcd_path.endswith('.bin'):
+                        if os.path.isfile(pcd_path) and not pcd_path.endswith('.bin'):
                             base, ext = os.path.splitext(pcd_path)
                             pcd_path = base + '.bin'
-                        if os.path.isfile(pcd_path) and pcd_path.endswith('.bin'):
-                            pcd = np.fromfile(pcd_path, dtype=np.float32).reshape(-1, 4)
-                            pcd_raw_path = os.path.join(img_out_dir, 'raw_pcd', f'{idx:06d}.ply')
-                            save_pointcloud_ply(pcd, pcd_raw_path)
-                            print_log(f'INFO !! raw pcd saved as PLY: {pcd_raw_path}',
-                                          logger='current', level=logging.INFO)
+                        # Check if point cloud file exists before loading
+                        if os.path.isfile(pcd_path):
+                            try:
+                                pcd = np.fromfile(pcd_path, dtype=np.float32).reshape(-1, 4)
+                                if img_out_dir:
+                                    pcd_raw_path = os.path.join(img_out_dir,'raw_pcd', f'{idx:06d}.ply')
+                                    save_pointcloud_ply(pcd, pcd_raw_path)
+                                    print_log(f'INFO !! raw pcd saved as PLY: {pcd_raw_path}',
+                                              logger='current', level=logging.INFO)
+                            except Exception as e:
+                                print_log(f'WARNING !! Failed to load or save point cloud from {pcd_path}: {e}',
+                                          logger='current', level=logging.WARNING)
                         else:
-                            print_log(f'WARNING !! pcd file not found: {pcd_path}', 
-                                     logger='current', level=logging.WARNING)
+                            print_log(f'WARNING !! Point cloud file not found: {pcd_path}. Skipping point cloud processing.',
+                                      logger='current', level=logging.WARNING)
                     elif isinstance(pcd_path, np.ndarray):
                         # Points are already loaded as numpy array
                         pcd = pcd_path[:, :4] if(len(pcd_path.shape) == 2 and pcd_path.shape[1] >= 4) else pcd_path
@@ -989,81 +934,50 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer,
                         print_log(f'WARNING !! Unsupported points type: {type(pcd_path)}', 
                                  logger='current', level=logging.WARNING)
 
-                    # Publish raw pointcloud (backward-compatible default)
-                    publish_raw = getattr(self, 'publish_raw_pcd', False)
-                    publish_filtered = getattr(self, 'publish_filtered_pcd', True)
-                    print_log(f'DEBUG: Point cloud publish settings - raw={publish_raw}, filtered={publish_filtered}, pcd shape={pcd.shape if pcd is not None else None}',
-                             logger='current', level=logging.DEBUG)
-                    
-                    if pcd is not None and publish_raw:
-                        self.pubPcdMsg(pcd)
-                        print_log(f'INFO !! raw pcd published (shape: {pcd.shape})',
-                                  logger='current', level=logging.INFO)
-                    # Publish filtered pointcloud (points OUTSIDE predicted boxes, removed points inside boxes)
-                    elif pcd is not None and publish_filtered:
-                        print_log(f'DEBUG: Starting point cloud filtering...',
-                                 logger='current', level=logging.DEBUG)
-                        # Get lidar2cam from current_origin_input if available (for mono detection)
-                        lidar2cam = None
-                        if current_origin_input is not None and isinstance(current_origin_input, dict):
-                            if 'lidar2cam' in current_origin_input:
-                                lidar2cam = current_origin_input['lidar2cam']
-                                print_log(f'DEBUG: Found lidar2cam in current_origin_input',
-                                         logger='current', level=logging.DEBUG)
-                            elif 'metainfo' in current_origin_input and current_origin_input['metainfo'] is not None:
-                                if 'lidar2cam' in current_origin_input['metainfo']:
-                                    lidar2cam = current_origin_input['metainfo']['lidar2cam']
-                                    print_log(f'DEBUG: Found lidar2cam in current_origin_input.metainfo',
-                                             logger='current', level=logging.DEBUG)
-                        
-                        if lidar2cam is None:
-                            print_log(f'WARNING: lidar2cam not found in current_origin_input, will try to get from data_sample.metainfo',
-                                     logger='current', level=logging.WARNING)
-                        
-                        filtered ,filter_in_bbox= self._filter_points_in_pred_boxes(
-                            pcd=pcd, data_sample=pred, score_thr=pred_score_thr, lidar2cam=lidar2cam)
-                        print_log(f'INFO: _filter_points_in_pred_boxes returned - filtered shape={filtered.shape if filtered is not None else None}, filter_in_bbox shape={filter_in_bbox.shape if filter_in_bbox is not None else None}',
-                                 logger='current', level=logging.INFO)
-                        if filtered is not None:
-                            if len(filtered) > 0:
-                                # Fix: publish_filtered_pcd only accepts one parameter (pcd)
-                                self.pubFilteredPcdMsg(filtered)
-                                print_log(f'INFO !! filtered pcd published (shape: {filtered.shape}, removed {len(filter_in_bbox) if filter_in_bbox is not None else 0} points inside boxes)',
-                                         logger='current', level=logging.INFO)
-                                # save filtered pcd to file
-                                if filter_in_bbox is not None and len(filter_in_bbox) > 0:
-                                    filtered_pcd_path = os.path.join(img_out_dir, 'filtered_pcd', f'{idx:06d}.bin')
-                                    filtered.astype(np.float32).tofile(filtered_pcd_path)
-                                    # save filtered pcd as PLY format in the same path
-                                    filtered_ply_path = os.path.join(img_out_dir, 'filtered_pcd', f'{idx:06d}.ply')
-                                    save_pointcloud_ply(filtered, filtered_ply_path)
-                                    print_log(f'INFO !! filtered pcd saved as PLY: {filtered_ply_path}',
-                                                logger='current', level=logging.INFO)
-                                else:
-                                    # No points inside boxes, save to no_filter_pcd directory
-                                    if filter_in_bbox is not None and len(filter_in_bbox) > 0:
-                                        filter_pcd_path = os.path.join(img_out_dir, 'no_filter_pcd', f'{idx:06d}.bin')
-                                        filter_in_bbox.astype(np.float32).tofile(filter_pcd_path)
-                            else:
-                                print_log(f'WARNING !! filtered pcd is empty (no points outside boxes)',
-                                          logger='current', level=logging.WARNING)
-                        else:
-                            print_log(f'WARNING !! filtered pcd is None (filtering failed or no boxes detected)',
-                                      logger='current', level=logging.WARNING)
+                    if 'lidar2cam' in current_origin_input:
+                        lidar2cam = current_origin_input['lidar2cam']
+                    elif 'metainfo' in current_origin_input and current_origin_input['metainfo'] is not None:
+                        if 'lidar2cam' in current_origin_input['metainfo']:
+                            lidar2cam = current_origin_input['metainfo']['lidar2cam']
                     else:
-                        print_log(f'WARNING !! pcd is None (filtering failed)',
-                                  logger='current', level=logging.WARNING)
+                        print_log(f'WARNING: lidar2cam not found in current_origin_input, will try to get from data_sample.metainfo',
+                                 logger='current', level=logging.WARNING)
+                        lidar2cam = None
+                    if pcd is not None and lidar2cam is not None:
+                        filtered_out_box ,filter_in_bbox= self._filter_points_in_pred_boxes(
+                            pcd=pcd, data_sample=pred, score_thr=pred_score_thr, lidar2cam=lidar2cam)
+                        if len(filtered_out_box) > 0:
+                            # self.pubFilteredPcdMsg(filtered)
+                            if img_out_dir:
+                                filter_pcd_path = os.path.join(img_out_dir, 'filtered_pcd', f'{idx:06d}.bin')
+                                os.makedirs(os.path.dirname(filter_pcd_path), exist_ok=True)
+                                filtered_out_box.astype(np.float32).tofile(filter_pcd_path)
+                                save_pointcloud_ply(filtered_out_box, filter_pcd_path.replace('.bin', '.ply'))
+                        else:
+                            print_log(f'WARNING !! filtered pcd is empty (no points outside boxes)',
+                                      logger='current', level=logging.WARNING)
+                    # # Publish raw pointcloud (backward-compatible default)
+                    # publish_raw = getattr(self, 'publish_raw_pcd', False)
+                    # publish_filtered = getattr(self, 'publish_filtered_pcd', True)
+                    # print_log(f'DEBUG: Point cloud publish settings - raw={publish_raw}, filtered={publish_filtered}, pcd shape={pcd.shape if pcd is not None else None}',
+                    #          logger='current', level=logging.DEBUG)
+                    
+                    # if pcd is not None and publish_raw:
+                    #     self.pubPcdMsg(pcd)
+                    #     print_log(f'INFO !! raw pcd published (shape: {pcd.shape})',
+                    #               logger='current', level=logging.INFO)
+                    # # Publish filtered pointcloud (points OUTSIDE predicted boxes, removed points inside boxes)
                 except Exception as e:
-                    print_log(f'ERROR !! Failed to publish pcd: {e}', 
+                    print_log(f'ERROR !! Failed to filter to point cloud :{e}', 
                              logger='current', level=logging.WARNING)
                     import traceback
                     print_log(traceback.format_exc(), logger='current', level=logging.DEBUG)
-            # Publish ROS bboxes for this frame
-            if self.ros_publisher_node is not None:
-                self.ros_publisher_node.pred_score_thr = float(pred_score_thr)
-            pub_bboxes = self.makePublishBbox(pred)
-            if pub_bboxes is not None:
-                self.pubBboxMsg(pub_bboxes)
+
+            # if self.ros_publisher_node is not None and self.ros_publisher_node.enabled_ros:
+            #     self.ros_publisher_node.pred_score_thr = float(pred_score_thr)
+            #     pub_bboxes = self.makePublishBbox(pred)
+            #     if pub_bboxes is not None:
+            #         self.pubBboxMsg(pub_bboxes)
             # Postprocess (optional)
             if not no_postprocess:
                 results = self.postprocess([pred], visualization,
@@ -1123,196 +1037,196 @@ class Det3DRosPublishNode:
         if self._ros_node_ready:
             return True
         
-        if not rospy.core.is_initialized():
-            try:
-                rospy.init_node(self.ros_node_name, anonymous=True, disable_signals=True)
+        # if not rospy.core.is_initialized():
+        #     try:
+        #         rospy.init_node(self.ros_node_name, anonymous=True, disable_signals=True)
 
-            except Exception as e:
-                print_log(f"Failed to initialize ROS node: {e}",logger='current',level=logging.ERROR)
-                self.enabled_ros = False
-                return False
+        #     except Exception as e:
+        #         print_log(f"Failed to initialize ROS node: {e}",logger='current',level=logging.ERROR)
+        #         self.enabled_ros = False
+        #         return False
 
         # init ros related
-        self._rospy = rospy
-        self._rate = rospy.Rate(self._publish_rate)
+        # self._rospy = rospy
+        # self._rate = rospy.Rate(self._publish_rate)
         self._BoundingBox_ = BoundingBox
         self._BoundingBoxArray_ = BoundingBoxArray
         self._quaternion_from_euler_ = quaternion_from_euler
         # bounding box publisher 
-        self._publisher_bbox = rospy.Publisher(
-            self.topic, BoundingBoxArray, queue_size=self.queue_size, latch=self.latch)
-        self._publisher_pcd = rospy.Publisher(
-            self.pcd_topic, PointCloud2 ,  queue_size=self.queue_size, latch=self.latch)
-        self._publisher_filtered_pcd = rospy.Publisher(
-            self.filtered_pcd_topic, PointCloud2, queue_size=self.queue_size, latch=self.latch)
-        self._ros_node_ready = True
+        # self._publisher_bbox = rospy.Publisher(
+        #     self.topic, BoundingBoxArray, queue_size=self.queue_size, latch=self.latch)
+        # self._publisher_pcd = rospy.Publisher(
+        #     self.pcd_topic, PointCloud2 ,  queue_size=self.queue_size, latch=self.latch)
+        # self._publisher_filtered_pcd = rospy.Publisher(
+        #     self.filtered_pcd_topic, PointCloud2, queue_size=self.queue_size, latch=self.latch)
+        # self._ros_node_ready = True
         print_log(f'ROS publisher has been initialized',logger='current',level=logging.INFO)
         return True
 
-    def get_bbox_time_stamp(self ,data_sample : Det3DDataSample) -> rospy.Time:
-        rospy = self._rospy
-        try:
-            timestamp = data_sample.metainfo.get('timestamp',None)
-            if timestamp is not None:
-                return rospy.Time.from_sec(float(timestamp))
-        except Exception as e:
-            print_log(
-                f'[Det3DRosPublishHook] get timestamp failed: {e}.',
-                logger='current',
-            level=logging.WARNING)
-        return rospy.Time.now()
+    # def get_bbox_time_stamp(self ,data_sample : Det3DDataSample) -> rospy.Time:
+    #     rospy = self._rospy
+    #     try:
+    #         timestamp = data_sample.metainfo.get('timestamp',None)
+    #         if timestamp is not None:
+    #             return rospy.Time.from_sec(float(timestamp))
+    #     except Exception as e:
+    #         print_log(
+    #             f'[Det3DRosPublishHook] get timestamp failed: {e}.',
+    #             logger='current',
+    #         level=logging.WARNING)
+    #     return rospy.Time.now()
     
-    def make_publish_msg(self,
-                        bboxes_3d : BaseInstance3DBoxes,
-                        labels_3d,
-                        scores_3d,
-                        data_sample : Det3DDataSample = None) -> BoundingBoxArray:
-        if bboxes_3d is None or labels_3d is None or scores_3d is None:
-            print_log('[Det3DRosPublishHook] make_publish_msg: bboxes_3d | labels_3d | scores_3d is None',logger='current',
-            level=logging.WARNING)
-            return None
-        print_log(f'INFO !! detected bboxes_3d {len(bboxes_3d)}',logger='current',level=logging.INFO)
+    # def make_publish_msg(self,
+    #                     bboxes_3d : BaseInstance3DBoxes,
+    #                     labels_3d,
+    #                     scores_3d,
+    #                     data_sample : Det3DDataSample = None) -> BoundingBoxArray:
+    #     if bboxes_3d is None or labels_3d is None or scores_3d is None:
+    #         print_log('[Det3DRosPublishHook] make_publish_msg: bboxes_3d | labels_3d | scores_3d is None',logger='current',
+    #         level=logging.WARNING)
+    #         return None
+    #     print_log(f'INFO !! detected bboxes_3d {len(bboxes_3d)}',logger='current',level=logging.INFO)
 
 
-        BoundingBbox3dArray = self._BoundingBoxArray_
-        BoundingBox = self._BoundingBox_
-        QuaternionFromEuler = self._quaternion_from_euler_
-        bbox_msg = BoundingBbox3dArray()
-        # get bbox timestamp
-        bbox_msg.header.stamp = self.get_bbox_time_stamp(data_sample)
-        self.publish_time = bbox_msg.header.stamp # publisher time : bbox equal to pcd 
-        bbox_msg.header.frame_id = self.frame_id
+    #     BoundingBbox3dArray = self._BoundingBoxArray_
+    #     BoundingBox = self._BoundingBox_
+    #     QuaternionFromEuler = self._quaternion_from_euler_
+    #     bbox_msg = BoundingBbox3dArray()
+    #     # get bbox timestamp
+    #     bbox_msg.header.stamp = self.get_bbox_time_stamp(data_sample)
+    #     self.publish_time = bbox_msg.header.stamp # publisher time : bbox equal to pcd 
+    #     bbox_msg.header.frame_id = self.frame_id
 
-        bboxes_3d_tensor = tensor2ndarray(bboxes_3d.tensor)
+    #     bboxes_3d_tensor = tensor2ndarray(bboxes_3d.tensor)
 
-        proc_count = 0
-        for box, label, score in zip(bboxes_3d, labels_3d, scores_3d):
-            center = box[0:3]
-            dims = box[3:6]
-            yaw = box[6]
-            qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, -yaw)
+    #     proc_count = 0
+    #     for box, label, score in zip(bboxes_3d, labels_3d, scores_3d):
+    #         center = box[0:3]
+    #         dims = box[3:6]
+    #         yaw = box[6]
+    #         qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, -yaw)
 
-            bbox = BoundingBox()
-            bbox.header = bbox_msg.header
-            bbox.pose.position.x = float(center[0])
-            bbox.pose.position.y = float(center[1])
-            bbox.pose.position.z = float(center[2])
+    #         bbox = BoundingBox()
+    #         bbox.header = bbox_msg.header
+    #         bbox.pose.position.x = float(center[0])
+    #         bbox.pose.position.y = float(center[1])
+    #         bbox.pose.position.z = float(center[2])
 
-            bbox.pose.orientation.x = float(qx)
-            bbox.pose.orientation.y = float(qy)
-            bbox.pose.orientation.z = float(qz)
-            bbox.pose.orientation.w = float(qw)
+    #         bbox.pose.orientation.x = float(qx)
+    #         bbox.pose.orientation.y = float(qy)
+    #         bbox.pose.orientation.z = float(qz)
+    #         bbox.pose.orientation.w = float(qw)
 
-            bbox.dimensions.x = float(dims[0])
-            bbox.dimensions.y = float(dims[1])
-            bbox.dimensions.z = float(dims[2])
+    #         bbox.dimensions.x = float(dims[0])
+    #         bbox.dimensions.y = float(dims[1])
+    #         bbox.dimensions.z = float(dims[2])
 
-            bbox.label = int(label)
-            bbox.value = float(score)
-            bbox_msg.boxes.append(bbox)
-            proc_count += 1
-        print_log(f'INFO !! published {proc_count} bboxes',logger='current',level=logging.INFO)
-        return bbox_msg
+    #         bbox.label = int(label)
+    #         bbox.value = float(score)
+    #         bbox_msg.boxes.append(bbox)
+    #         proc_count += 1
+    #     print_log(f'INFO !! published {proc_count} bboxes',logger='current',level=logging.INFO)
+    #     return bbox_msg
 
-    def make_publish_bbox(self,
-                          data_sample:Optional[Det3DDataSample] = None) -> Optional[BoundingBoxArray]:
-        if data_sample is None:
-            print_log('[Det3DRosPublishHook] make_publish_bbox: data_sample is None',logger='current',
-            level=logging.WARNING)
-            return None
-        BoundingBbox3dArray = self._BoundingBoxArray_
-        empty_msg = BoundingBbox3dArray()
-        empty_msg.header.stamp = self.get_bbox_time_stamp(data_sample)
-        empty_msg.header.frame_id = self.frame_id
+    # def make_publish_bbox(self,
+    #                       data_sample:Optional[Det3DDataSample] = None) -> Optional[BoundingBoxArray]:
+    #     if data_sample is None:
+    #         print_log('[Det3DRosPublishHook] make_publish_bbox: data_sample is None',logger='current',
+    #         level=logging.WARNING)
+    #         return None
+    #     BoundingBbox3dArray = self._BoundingBoxArray_
+    #     empty_msg = BoundingBbox3dArray()
+    #     empty_msg.header.stamp = self.get_bbox_time_stamp(data_sample)
+    #     empty_msg.header.frame_id = self.frame_id
 
-        if 'pred_instances_3d' not in data_sample:
-            print_log('ERROR !! pred_instances_3d not found in data_sample',logger='current',level=logging.WARNING)
-            return empty_msg
-        pred_instances_3d = data_sample.pred_instances_3d
+    #     if 'pred_instances_3d' not in data_sample:
+    #         print_log('ERROR !! pred_instances_3d not found in data_sample',logger='current',level=logging.WARNING)
+    #         return empty_msg
+    #     pred_instances_3d = data_sample.pred_instances_3d
 
-        # Filter predictions by score threshold
-        if hasattr(pred_instances_3d, 'scores_3d'):
-            pred_instances_3d = pred_instances_3d[pred_instances_3d.scores_3d > self.pred_score_thr].to('cpu')
+    #     # Filter predictions by score threshold
+    #     if hasattr(pred_instances_3d, 'scores_3d'):
+    #         pred_instances_3d = pred_instances_3d[pred_instances_3d.scores_3d > self.pred_score_thr].to('cpu')
 
-        bboxes_3d = getattr(pred_instances_3d,'bboxes_3d',None)# bounding box 3d
-        labels_3d = getattr(pred_instances_3d,'labels_3d',None) # label 3d
-        scores_3d = getattr(pred_instances_3d,'scores_3d',None) # score 3d
+    #     bboxes_3d = getattr(pred_instances_3d,'bboxes_3d',None)# bounding box 3d
+    #     labels_3d = getattr(pred_instances_3d,'labels_3d',None) # label 3d
+    #     scores_3d = getattr(pred_instances_3d,'scores_3d',None) # score 3d
 
-        # if isinstance(bboxes_3d,BaseInstance3DBoxes):
-        #     bbox_msg = self.make_publish_msg(bboxes_3d, labels_3d, scores_3d, data_sample)
-        bbox_msg = self.make_publish_msg(bboxes_3d, labels_3d, scores_3d, data_sample)
-        return bbox_msg        
+    #     # if isinstance(bboxes_3d,BaseInstance3DBoxes):
+    #     #     bbox_msg = self.make_publish_msg(bboxes_3d, labels_3d, scores_3d, data_sample)
+    #     bbox_msg = self.make_publish_msg(bboxes_3d, labels_3d, scores_3d, data_sample)
+    #     return bbox_msg        
 
-    def publish_bbox(self,bbox3d_msgs:Optional[BoundingBoxArray]= None):
-        if bbox3d_msgs is None:
-            print_log('[Det3DRosPublishHook] publish_bbox: bbox3d_msgs is None',logger='current',
-            level=logging.WARNING)
-            return
-        self._publisher_bbox.publish(bbox3d_msgs)
+    # def publish_bbox(self,bbox3d_msgs:Optional[BoundingBoxArray]= None):
+    #     if bbox3d_msgs is None:
+    #         print_log('[Det3DRosPublishHook] publish_bbox: bbox3d_msgs is None',logger='current',
+    #         level=logging.WARNING)
+    #         return
+    #     self._publisher_bbox.publish(bbox3d_msgs)
 
 
-    def publish_pcd(self, pcd:Union[np.ndarray,Tensor]):
-        if pcd is None:
-            print_log('ERROR: pcd is None , please check the pcd input data', logger='current', level=logging.WARNING)
-            return
+    # def publish_pcd(self, pcd:Union[np.ndarray,Tensor]):
+    #     if pcd is None:
+    #         print_log('ERROR: pcd is None , please check the pcd input data', logger='current', level=logging.WARNING)
+    #         return
 
-        if isinstance(pcd, Tensor):
-            pcd = tensor2ndarray(pcd)
-        pcd_msg = self.make_publish_pcd_msgs(pcd, frame_id = self.frame_id)
-        if pcd_msg is not None:
-            self._publisher_pcd.publish(pcd_msg)
-        else:
-            print_log('ERROR: pcd_msg is None , please check the pcd_msg input data', logger='current', level=logging.WARNING)
-            return
+    #     if isinstance(pcd, Tensor):
+    #         pcd = tensor2ndarray(pcd)
+    #     pcd_msg = self.make_publish_pcd_msgs(pcd, frame_id = self.frame_id)
+    #     if pcd_msg is not None:
+    #         self._publisher_pcd.publish(pcd_msg)
+    #     else:
+    #         print_log('ERROR: pcd_msg is None , please check the pcd_msg input data', logger='current', level=logging.WARNING)
+    #         return
 
-    def publish_filtered_pcd(self, pcd: Union[np.ndarray, Tensor]):
-        """Publish filtered pointcloud (points inside predicted boxes)."""
-        if pcd is None:
-            print_log('ERROR: filtered pcd is None', logger='current', level=logging.WARNING)
-            return
-        if isinstance(pcd, Tensor):
-            pcd = tensor2ndarray(pcd)
-        pcd_msg = self.make_publish_pcd_msgs(pcd, frame_id=self.frame_id)
-        if pcd_msg is not None:
-            self._publisher_filtered_pcd.publish(pcd_msg)
-        else:
-            print_log('ERROR: filtered pcd_msg is None', logger='current', level=logging.WARNING)
-            return
+    # def publish_filtered_pcd(self, pcd: Union[np.ndarray, Tensor]):
+    #     """Publish filtered pointcloud (points inside predicted boxes)."""
+    #     if pcd is None:
+    #         print_log('ERROR: filtered pcd is None', logger='current', level=logging.WARNING)
+    #         return
+    #     if isinstance(pcd, Tensor):
+    #         pcd = tensor2ndarray(pcd)
+    #     pcd_msg = self.make_publish_pcd_msgs(pcd, frame_id=self.frame_id)
+    #     if pcd_msg is not None:
+    #         self._publisher_filtered_pcd.publish(pcd_msg)
+    #     else:
+    #         print_log('ERROR: filtered pcd_msg is None', logger='current', level=logging.WARNING)
+    #         return
 
-    def make_publish_pcd_msgs(self , pcd : Optional[np.ndarray] = None,frame_id :str = None) -> Optional[PointCloud2]:
-        if pcd is None:
-            print_log('ERROR: pcd is None , please check the pcd input data', logger='current', level=logging.WARNING)
-            return None
+    # def make_publish_pcd_msgs(self , pcd : Optional[np.ndarray] = None,frame_id :str = None) -> Optional[PointCloud2]:
+    #     if pcd is None:
+    #         print_log('ERROR: pcd is None , please check the pcd input data', logger='current', level=logging.WARNING)
+    #         return None
 
-        point_fields = [PointField(name='x', offset=0,
-                               datatype=PointField.FLOAT32, count=1),
-                    PointField(name='y', offset=4,
-                               datatype=PointField.FLOAT32, count=1),
-                    PointField(name='z', offset=8,
-                               datatype=PointField.FLOAT32, count=1),
-                    PointField(name='intensity', offset=12,
-                               datatype=PointField.FLOAT32, count=1)]  # pcd buffer 
-        if self.publish_time is not None:
-            header = Header(frame_id=frame_id, stamp=self.publish_time) if frame_id is not None else Header(frame_id=self.frame_id, stamp=self.publish_time)
-        else:
-            header = Header(frame_id=frame_id, stamp=rospy.Time.now()) if frame_id is not None else Header(frame_id=self.frame_id, stamp=rospy.Time.now())
+    #     point_fields = [PointField(name='x', offset=0,
+    #                            datatype=PointField.FLOAT32, count=1),
+    #                 PointField(name='y', offset=4,
+    #                            datatype=PointField.FLOAT32, count=1),
+    #                 PointField(name='z', offset=8,
+    #                            datatype=PointField.FLOAT32, count=1),
+    #                 PointField(name='intensity', offset=12,
+    #                            datatype=PointField.FLOAT32, count=1)]  # pcd buffer 
+    #     if self.publish_time is not None:
+    #         header = Header(frame_id=frame_id, stamp=self.publish_time) if frame_id is not None else Header(frame_id=self.frame_id, stamp=self.publish_time)
+    #     else:
+    #         header = Header(frame_id=frame_id, stamp=rospy.Time.now()) if frame_id is not None else Header(frame_id=self.frame_id, stamp=rospy.Time.now())
         
         
-        points_byte = pcd[:, 0:4].tobytes()
-        num_points = len(pcd)
-        point_step = 16  # 4 floats * 4 bytes each = 16 bytes per point
+    #     points_byte = pcd[:, 0:4].tobytes()
+    #     num_points = len(pcd)
+    #     point_step = 16  # 4 floats * 4 bytes each = 16 bytes per point
         
-        print_log(f'INFO !! point cloud msgs make successfully for publisher !! ', logger='current', level=logging.INFO)
-        return PointCloud2(
-                        header=header,
-                        height=1,
-                        width=num_points,
-                        is_dense=False,
-                        is_bigendian=False,
-                        fields=point_fields,
-                        point_step=point_step,
-                        row_step=len(points_byte),
-                        data=points_byte)
+    #     print_log(f'INFO !! point cloud msgs make successfully for publisher !! ', logger='current', level=logging.INFO)
+    #     return PointCloud2(
+    #                     header=header,
+    #                     height=1,
+    #                     width=num_points,
+    #                     is_dense=False,
+    #                     is_bigendian=False,
+    #                     fields=point_fields,
+    #                     point_step=point_step,
+    #                     row_step=len(points_byte),
+    #                     data=points_byte)
 
 def run(init_args: dict, call_args: dict):
     try:
@@ -1332,7 +1246,8 @@ def run(init_args: dict, call_args: dict):
             pcd_topic=pcd_topic,
             filtered_pcd_topic=filtered_pcd_topic,
             publish_raw_pcd=publish_raw_pcd,
-            publish_filtered_pcd=publish_filtered_pcd)
+            publish_filtered_pcd=publish_filtered_pcd,
+            enabled_ros=False)  # no need to publish ros filtered pcd
         results_vis = inferencer.run_inference(**call_args)
         if 'visualization' not in results_vis:
             print_log('ERROR: visualization not found in results', logger='current', level=logging.WARNING)

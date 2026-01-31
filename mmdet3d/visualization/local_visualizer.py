@@ -1,5 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import copy
+import logging
 import math
 import os
 import sys
@@ -660,7 +661,8 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
 
         data_3d = dict()
 
-        if vis_task in ['lidar_det', 'multi-modality_det']:
+        if vis_task in ['lidar_det', 'multi-modality_det','mono_det']:
+            # origin point cloud point process 
             assert 'points' in data_input
             points = data_input['points']
             check_type('points', points, (np.ndarray, Tensor))
@@ -679,20 +681,10 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
                 points.translate(trans_vec)
                 points = tensor2ndarray(points.tensor)
 
-            max_label = int(max(labels_3d) if len(labels_3d) > 0 else 0)
-            bbox_color = palette if self.bbox_color is None \
-                else self.bbox_color
-            bbox_palette = get_palette(bbox_color, max_label + 1)
-            colors = [bbox_palette[label] for label in labels_3d]
-
-            self.set_points(
-                points, pcd_mode=2, mode='xyzrgb' if show_pcd_rgb else 'xyz')
-            self.draw_bboxes_3d(bboxes_3d_depth, bbox_color=colors)
-
             data_3d['bboxes_3d'] = tensor2ndarray(bboxes_3d_depth.tensor)
             data_3d['points'] = points
-
-        if vis_task in ['mono_det', 'multi-modality_det']:
+            
+            # origin input image process 
             assert 'img' in data_input
             img = data_input['img']
             if isinstance(img, list) or (isinstance(img, (np.ndarray, Tensor))
@@ -712,31 +704,7 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
                         single_img = single_img.permute(1, 2, 0).numpy()
                         single_img = single_img[..., [2, 1, 0]]  # bgr to rgb
                     self.set_image(single_img)
-                    single_img_meta = dict()
-                    for key, meta in input_meta.items():
-                        if isinstance(meta,
-                                      (Sequence, np.ndarray,
-                                       Tensor)) and len(meta) == len(img):
-                            single_img_meta[key] = meta[i]
-                        else:
-                            single_img_meta[key] = meta
 
-                    max_label = int(
-                        max(labels_3d) if len(labels_3d) > 0 else 0)
-                    bbox_color = palette if self.bbox_color is None \
-                        else self.bbox_color
-                    bbox_palette = get_palette(bbox_color, max_label + 1)
-                    colors = [bbox_palette[label] for label in labels_3d]
-
-                    self.draw_proj_bboxes_3d(
-                        bboxes_3d,
-                        single_img_meta,
-                        img_size=single_img.shape[:2][::-1],
-                        edge_colors=colors)
-                    if vis_task == 'mono_det' and hasattr(
-                            instances, 'centers_2d'):
-                        centers_2d = instances.centers_2d
-                        self.draw_points(centers_2d)
                     composed_img[(i // img_col) *
                                  img_size[0]:(i // img_col + 1) * img_size[0],
                                  (i % img_col) *
@@ -744,25 +712,76 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
                                  img_size[1]] = self.get_image()
                 data_3d['img'] = composed_img
             else:
-                # show single-view image
-                # TODO: Solve the problem: some line segments of 3d bboxes are
-                # out of image by a large margin
                 if isinstance(data_input['img'], Tensor):
                     img = img.permute(1, 2, 0).numpy()
                     img = img[..., [2, 1, 0]]  # bgr to rgb
                 self.set_image(img)
-
-                max_label = int(max(labels_3d) if len(labels_3d) > 0 else 0)
-                bbox_color = palette if self.bbox_color is None \
-                    else self.bbox_color
-                bbox_palette = get_palette(bbox_color, max_label + 1)
-                colors = [bbox_palette[label] for label in labels_3d]
-
-                self.draw_proj_bboxes_3d(
-                    bboxes_3d, input_meta, edge_colors=colors)
-                if vis_task == 'mono_det' and hasattr(instances, 'centers_2d'):
-                    centers_2d = instances.centers_2d
-                    self.draw_points(centers_2d)
+                
+                # For mono_det task, draw projected 3D boxes on image
+                if vis_task == 'mono_det' and bboxes_3d is not None and len(bboxes_3d) > 0:
+                    # Check box type to determine which projection matrix to use
+                    from mmdet3d.structures import CameraInstance3DBoxes, LiDARInstance3DBoxes
+                    
+                    proj_meta = {}
+                    use_cam2img = False
+                    
+                    # For CameraInstance3DBoxes, we need cam2img
+                    if isinstance(bboxes_3d, CameraInstance3DBoxes):
+                        if 'cam2img' in input_meta:
+                            proj_meta['cam2img'] = input_meta['cam2img']
+                            use_cam2img = True
+                            print_log(f'INFO: Using cam2img for CameraInstance3DBoxes projection', 
+                                     logger='current', level=logging.INFO)
+                        elif 'lidar2cam' in input_meta and 'cam2img' in input_meta:
+                            # Extract cam2img from input_meta (it should be there)
+                            proj_meta['cam2img'] = input_meta['cam2img']
+                            use_cam2img = True
+                            print_log(f'DEBUG: Using cam2img from lidar2cam context for CameraInstance3DBoxes', 
+                                     logger='current', level=logging.DEBUG)
+                    # For LiDARInstance3DBoxes, we need lidar2img
+                    elif isinstance(bboxes_3d, LiDARInstance3DBoxes):
+                        if 'lidar2img' in input_meta:
+                            proj_meta['lidar2img'] = input_meta['lidar2img']
+                            print_log(f'DEBUG: Using lidar2img for LiDARInstance3DBoxes projection', 
+                                     logger='current', level=logging.DEBUG)
+                        elif 'lidar2cam' in input_meta and 'cam2img' in input_meta:
+                            # Construct lidar2img from lidar2cam and cam2img
+                            lidar2cam = np.array(input_meta['lidar2cam'])
+                            cam2img = np.array(input_meta['cam2img'])
+                            if lidar2cam.shape == (3, 4):
+                                lidar2cam_4x4 = np.eye(4, dtype=np.float32)
+                                lidar2cam_4x4[:3, :] = lidar2cam
+                                lidar2cam = lidar2cam_4x4
+                            if cam2img.shape == (3, 3):
+                                cam2img_4x4 = np.eye(4, dtype=np.float32)
+                                cam2img_4x4[:3, :3] = cam2img
+                                cam2img = cam2img_4x4
+                            elif cam2img.shape == (3, 4):
+                                cam2img_4x4 = np.eye(4, dtype=np.float32)
+                                cam2img_4x4[:3, :] = cam2img
+                                cam2img = cam2img_4x4
+                            proj_meta['lidar2img'] = cam2img @ lidar2cam
+                            print_log(f'DEBUG: Constructed lidar2img from lidar2cam and cam2img for LiDARInstance3DBoxes', 
+                                     logger='current', level=logging.DEBUG)
+                    
+                    if not proj_meta:
+                        print_log(f'WARNING: No projection matrix found in metainfo for {type(bboxes_3d).__name__}. '
+                                 f'Available keys: {list(input_meta.keys())}. '
+                                 f'Cannot draw projected 3D boxes.',
+                                 logger='current', level=logging.WARNING)
+                    
+                    # Draw projected boxes if we have projection matrix
+                    if proj_meta:
+                        try:
+                            self.draw_proj_bboxes_3d(bboxes_3d, proj_meta)
+                            print_log(f'INFO: Successfully drew {len(bboxes_3d)} projected 3D boxes of type {type(bboxes_3d).__name__} on image', 
+                                     logger='current', level=logging.INFO)
+                        except Exception as e:
+                            print_log(f'WARNING: Failed to draw projected 3D boxes: {e}',
+                                     logger='current', level=logging.WARNING)
+                            import traceback
+                            print_log(traceback.format_exc(), logger='current', level=logging.DEBUG)
+                
                 drawn_img = self.get_image()
                 data_3d['img'] = drawn_img
 
@@ -1022,70 +1041,35 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
         ]:
             self.o3d_vis = self._initialize_o3d_vis(show=show)
 
-        if draw_gt and data_sample is not None:
-            if 'gt_instances_3d' in data_sample:
-                gt_data_3d = self._draw_instances_3d(
-                    data_input, data_sample.gt_instances_3d,
-                    data_sample.metainfo, vis_task, show_pcd_rgb, palette)
-            if 'gt_instances' in data_sample:
-                if len(data_sample.gt_instances) > 0:
-                    assert 'img' in data_input
-                    img = data_input['img']
-                    if isinstance(data_input['img'], Tensor):
-                        img = data_input['img'].permute(1, 2, 0).numpy()
-                        img = img[..., [2, 1, 0]]  # bgr to rgb
-                    gt_img_data = self._draw_instances(
-                        img, data_sample.gt_instances, classes, palette)
-            if 'gt_pts_seg' in data_sample and vis_task == 'lidar_seg':
-                assert classes is not None, 'class information is ' \
-                                            'not provided when ' \
-                                            'visualizing semantic ' \
-                                            'segmentation results.'
-                assert 'points' in data_input
-                self._draw_pts_sem_seg(data_input['points'],
-                                       data_sample.gt_pts_seg, palette,
-                                       keep_index)
-
         if draw_pred and data_sample is not None:
             if 'pred_instances_3d' in data_sample:
                 pred_instances_3d = data_sample.pred_instances_3d
-                # .cpu can not be used for BaseInstance3DBoxes
-                # so we need to use .to('cpu')
+                num_before_filter = len(pred_instances_3d)
                 pred_instances_3d = pred_instances_3d[
                     pred_instances_3d.scores_3d > pred_score_thr].to('cpu')
+                num_after_filter = len(pred_instances_3d)
+                if num_after_filter == 0:
+                    print_log(f'INFO: No detections above score threshold {pred_score_thr} '
+                             f'(filtered {num_before_filter} -> {num_after_filter})',
+                             logger='current', level=logging.INFO)
+                else:
+                    print_log(f'INFO: {num_after_filter}/{num_before_filter} detections above '
+                             f'score threshold {pred_score_thr}',
+                             logger='current', level=logging.INFO)
                 pred_data_3d = self._draw_instances_3d(data_input,
                                                        pred_instances_3d,
                                                        data_sample.metainfo,
                                                        vis_task, show_pcd_rgb,
                                                        palette)
+                if pred_data_3d is None and num_after_filter > 0:
+                    print_log(f'WARNING: _draw_instances_3d returned None despite having '
+                             f'{num_after_filter} detections',
+                             logger='current', level=logging.WARNING)
 
-                # need to draw the point cloud on the image
-                assert 'img' in data_input and 'points' in data_input
-                img = data_input['img']
-                point = data_input['points']
-            if 'pred_instances' in data_sample:
-                if 'img' in data_input and len(data_sample.pred_instances) > 0:
-                    pred_instances = data_sample.pred_instances
-                    pred_instances = pred_instances[
-                        pred_instances.scores > pred_score_thr].cpu()
-                    img = data_input['img']
-                    if isinstance(data_input['img'], Tensor):
-                        img = data_input['img'].permute(1, 2, 0).numpy()
-                        img = img[..., [2, 1, 0]]  # bgr to rgb
-                    pred_img_data = self._draw_instances(
-                        img, pred_instances, classes, palette)
-            if 'pred_pts_seg' in data_sample and vis_task == 'lidar_seg':
-                assert classes is not None, 'class information is ' \
-                                            'not provided when ' \
-                                            'visualizing semantic ' \
-                                            'segmentation results.'
-                assert 'points' in data_input
-                self._draw_pts_sem_seg(data_input['points'],
-                                       data_sample.pred_pts_seg, palette,
-                                       keep_index)
+            img = data_input['img']
+            point = data_input['points']
 
         # monocular 3d object detection image
-        if vis_task in ['mono_det', 'multi-modality_det']:
             if gt_data_3d is not None and pred_data_3d is not None:
                 drawn_img_3d = np.concatenate(
                     (gt_data_3d['img'], pred_data_3d['img']), axis=1)
@@ -1094,19 +1078,18 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
             elif pred_data_3d is not None:
                 drawn_img_3d = pred_data_3d['img']
             else:  # both instances of gt and pred are empty
-                drawn_img_3d = None
+                # For mono_det, still draw the image even if no detections
+                if vis_task == 'mono_det' and 'img' in data_input:
+                    img = data_input['img']
+                    if isinstance(img, Tensor):
+                        img = img.permute(1, 2, 0).numpy()
+                        img = img[..., [2, 1, 0]]  # bgr to rgb
+                    self.set_image(img)
+                    drawn_img_3d = self.get_image()
+                else:
+                    drawn_img_3d = None
         else:
             drawn_img_3d = None
-
-        # 2d object detection image
-        if gt_img_data is not None and pred_img_data is not None:
-            drawn_img = np.concatenate((gt_img_data, pred_img_data), axis=1)
-        elif gt_img_data is not None:
-            drawn_img = gt_img_data
-        elif pred_img_data is not None:
-            drawn_img = pred_img_data
-        else:
-            drawn_img = None
 
         if show:
             self.show(
@@ -1133,12 +1116,12 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
                 points = data_input['points']
                 self.draw_points_on_image(points,img, data_input['lidar2img'])
                 prefix , ext =  os.path.splitext(out_file)
-                image_point_save_file_path = f"{prefix}_pcd_vis{ext}"
-                self.save_point_on_images(image_point_save_file_path)
+                if vis_task == 'multi-modality_det':
+                    image_point_save_file_path = f"{prefix}_pcd_vis{ext}"
+                    self.save_point_on_images(image_point_save_file_path)
+                else:
+                    pass
             else:
                 pass
-            if drawn_img is not None:
-                mmcv.imwrite(drawn_img[..., ::-1],
-                             out_file[:-4] + '_2d' + out_file[-4:])
         else:
             self.add_image(name, drawn_img_3d, step)

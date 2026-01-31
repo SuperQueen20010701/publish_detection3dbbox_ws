@@ -1,4 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+import os
 import os.path as osp
 from typing import Dict, List, Optional, Sequence, Union
 
@@ -181,12 +182,11 @@ class MonoDet3DInferencer(Base3DInferencer):
                   img_out_dir: str = '',
                   cam_type_dir: str = 'CAM2') -> Union[List[np.ndarray], None]:
         """Visualize predictions.
-
         Args:
             inputs (List[Dict]): Inputs for the inferencer.
             preds (List[Dict]): Predictions of the model.
             return_vis (bool): Whether to return the visualization result.
-                Defaults to False.
+                Defaults to False.(control point cloud to image)
             show (bool): Whether to display the image in a popup window.
                 Defaults to False.
             wait_time (float): The interval of show (s). Defaults to 0.
@@ -208,7 +208,7 @@ class MonoDet3DInferencer(Base3DInferencer):
 
         if not show and img_out_dir == '' and not return_vis:
             return None
-
+        os.makedirs(img_out_dir, exist_ok=True)
         if getattr(self, 'visualizer') is None:
             raise ValueError('Visualization needs the "visualizer" term'
                              'defined in the config, but got None.')
@@ -230,9 +230,29 @@ class MonoDet3DInferencer(Base3DInferencer):
                                  f"{type(single_input['img'])}")
 
             out_file = osp.join(img_out_dir, 'vis_camera', cam_type_dir,
-                                img_name) if img_out_dir != '' else None
-
-            data_input = dict(img=img)
+                                img_name) if img_out_dir != '' else None # use for visualize the prediction bbox on image 
+            if out_file is not None:
+                os.makedirs(os.path.dirname(out_file), exist_ok=True)
+            assert 'points' in single_input, 'points is not in single_input'
+            single_points = single_input['points']
+            if isinstance(single_points, str):
+                pts_type = mmengine.fileio.get(single_points)
+                single_points = np.frombuffer(pts_type, dtype=np.float32)
+                single_points = single_points.reshape(-1, 4)
+            data_input = dict(img=img,
+                              points=single_points)
+            
+            # Ensure metainfo contains cam2img/lidar2img for visualization
+            if not hasattr(pred, 'metainfo') or pred.metainfo is None:
+                pred.metainfo = {}
+            # Add cam2img, lidar2cam, lidar2img to metainfo if available in single_input
+            if 'cam2img' in single_input:
+                pred.metainfo['cam2img'] = single_input['cam2img']
+            if 'lidar2cam' in single_input:
+                pred.metainfo['lidar2cam'] = single_input['lidar2cam']
+            if 'lidar2img' in single_input:
+                pred.metainfo['lidar2img'] = single_input['lidar2img']
+            
             self.visualizer.add_datasample(
                 img_name,
                 data_input,

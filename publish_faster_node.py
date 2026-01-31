@@ -16,13 +16,13 @@ import mmengine
 import torch
 
 # ros publish
-import rospy
-from sensor_msgs.msg import PointCloud2,PointField
-from jsk_recognition_msgs.msg import BoundingBox, BoundingBoxArray
-from tf.transformations import quaternion_from_euler
-from std_msgs.msg import Header
-from geometry_msgs.msg import Point, Quaternion, Vector3
-from visualization_msgs.msg import Marker, MarkerArray
+# import rospy
+# from sensor_msgs.msg import PointCloud2,PointField
+# from jsk_recognition_msgs.msg import BoundingBox, BoundingBoxArray
+# from tf.transformations import quaternion_from_euler
+# from std_msgs.msg import Header
+# from geometry_msgs.msg import Point, Quaternion, Vector3
+# from visualization_msgs.msg import Marker, MarkerArray
 # detection inferencer
 try:
     from mmdet3d.apis import MultiModalityDet3DInferencer,init_model
@@ -107,7 +107,7 @@ def parse_args():
     parser.set_defaults(publish_raw_pcd=False)  # Default: don't publish raw PCD
     parser.add_argument('--publish-filtered-pcd', dest='publish_filtered_pcd', action='store_true',
                         help='Disable publishing filtered pointcloud (points outside predicted boxes, removed points inside boxes)')
-    parser.set_defaults(publish_filtered_pcd=True)  # Default: publish filtered PCD (points outside boxes)
+    parser.set_defaults(publish_filtered_pcd=False)  # Default: publish filtered PCD (points outside boxes)
     # runtime flags (keep backward-compatible aliases)
     parser.add_argument('--no-visualize', dest='no_visualize',
                         action='store_true', help='Disable visualization function')
@@ -261,25 +261,25 @@ class MultiModalityDetectionInferencerNode(MultiModalityDet3DInferencer):
         self.load_param_from_cfg()
         self.publish_raw_pcd = bool(publish_raw_pcd)
         self.publish_filtered_pcd = bool(publish_filtered_pcd)
-        if self.ros_enabled and self.ros_topic is not None:
-            self.ros_publisher_node = Det3DRosPublishNode(
-                topic=self.ros_topic,
-                frame_id='velodyne',
-                pred_score_thr=float(pred_score_thr),
-                ros_node_name='detection_bbox_publisher',
-                queue_size=10,
-                latch=True,
-                enabled_ros=self.ros_enabled,
-                pcd_topic=str(pcd_topic),
-                filtered_pcd_topic=str(filtered_pcd_topic)
-            )
+        # if self.ros_enabled and self.ros_topic is not None:
+            # self.ros_publisher_node = Det3DRosPublishNode(
+            #     topic=self.ros_topic,
+            #     frame_id='velodyne',
+            #     pred_score_thr=float(pred_score_thr),
+            #     ros_node_name='detection_bbox_publisher',
+            #     queue_size=10,
+            #     latch=True,
+            #     enabled_ros=self.ros_enabled,
+            #     pcd_topic=str(pcd_topic),
+            #     filtered_pcd_topic=str(filtered_pcd_topic)
+            # )
 
-        if self.ros_publisher_node is not None:
-            self.makePublishBbox = self.ros_publisher_node.make_publish_bbox
-            self.pubBboxMsg = self.ros_publisher_node.publish_bbox  # Fix: should be publish_bbox, not make_publish_bbox
-            self.pubPcdMsg = self.ros_publisher_node.publish_pcd
-            self.pubFilteredPcdMsg = self.ros_publisher_node.publish_filtered_pcd
-            self.rate = self.ros_publisher_node._rate
+        # if self.ros_publisher_node is not None:
+        #     self.makePublishBbox = self.ros_publisher_node.make_publish_bbox
+        #     self.pubBboxMsg = self.ros_publisher_node.publish_bbox  # Fix: should be publish_bbox, not make_publish_bbox
+        #     self.pubPcdMsg = self.ros_publisher_node.publish_pcd
+        #     self.pubFilteredPcdMsg = self.ros_publisher_node.publish_filtered_pcd
+        #     self.rate = self.ros_publisher_node._rate
         if out_pcd_img_path is not None:
             self.out_pcd_img_path = out_pcd_img_path
         else:
@@ -646,7 +646,7 @@ class Det3DRosPublishNode:
         self.enabled_ros = bool(enabled_ros)
         self._ros_node_ready = False
 
-        self._rospy = None
+        # self._rospy = None
         self.ros_node_name = ros_node_name
         self.queue_size = int(queue_size)
         self.latch = bool(latch)
@@ -667,202 +667,202 @@ class Det3DRosPublishNode:
         enable_result = self._enable_publish_ros()
         print_log(f'ROS publisher initialized:{enable_result}',logger='current',level=logging.INFO)
 
-    def _enable_publish_ros(self) -> bool:
-        if not self.enabled_ros:
-            return False
-        if self._ros_node_ready:
-            return True
+    # def _enable_publish_ros(self) -> bool:
+    #     if not self.enabled_ros:
+    #         return False
+    #     if self._ros_node_ready:
+    #         return True
         
-        if not rospy.core.is_initialized():
-            try:
-                rospy.init_node(self.ros_node_name, anonymous=True, disable_signals=True)
+    #     if not rospy.core.is_initialized():
+    #         try:
+    #             rospy.init_node(self.ros_node_name, anonymous=True, disable_signals=True)
 
-            except Exception as e:
-                print_log(f"Failed to initialize ROS node: {e}",logger='current',level=logging.ERROR)
-                self.enabled_ros = False
-                return False
+    #         except Exception as e:
+    #             print_log(f"Failed to initialize ROS node: {e}",logger='current',level=logging.ERROR)
+    #             self.enabled_ros = False
+    #             return False
 
-        # init ros related
-        self._rospy = rospy
-        self._rate = rospy.Rate(self._publish_rate)
-        self._BoundingBox_ = BoundingBox
-        self._BoundingBoxArray_ = BoundingBoxArray
-        self._quaternion_from_euler_ = quaternion_from_euler
-        # bounding box publisher 
-        self._publisher_bbox = rospy.Publisher(
-            self.topic, BoundingBoxArray, queue_size=self.queue_size, latch=self.latch)
-        self._publisher_pcd = rospy.Publisher(
-            self.pcd_topic, PointCloud2 ,  queue_size=self.queue_size, latch=self.latch)
-        self._publisher_filtered_pcd = rospy.Publisher(
-            self.filtered_pcd_topic, PointCloud2, queue_size=self.queue_size, latch=self.latch)
-        self._ros_node_ready = True
-        print_log(f'ROS publisher has been initialized',logger='current',level=logging.INFO)
-        return True
+    #     # init ros related
+    #     self._rospy = rospy
+    #     self._rate = rospy.Rate(self._publish_rate)
+    #     self._BoundingBox_ = BoundingBox
+    #     self._BoundingBoxArray_ = BoundingBoxArray
+    #     self._quaternion_from_euler_ = quaternion_from_euler
+    #     # bounding box publisher 
+    #     self._publisher_bbox = rospy.Publisher(
+    #         self.topic, BoundingBoxArray, queue_size=self.queue_size, latch=self.latch)
+    #     self._publisher_pcd = rospy.Publisher(
+    #         self.pcd_topic, PointCloud2 ,  queue_size=self.queue_size, latch=self.latch)
+    #     self._publisher_filtered_pcd = rospy.Publisher(
+    #         self.filtered_pcd_topic, PointCloud2, queue_size=self.queue_size, latch=self.latch)
+    #     self._ros_node_ready = True
+    #     print_log(f'ROS publisher has been initialized',logger='current',level=logging.INFO)
+    #     return True
 
-    def get_bbox_time_stamp(self ,data_sample : Det3DDataSample) -> rospy.Time:
-        rospy = self._rospy
-        try:
-            timestamp = data_sample.metainfo.get('timestamp',None)
-            if timestamp is not None:
-                return rospy.Time.from_sec(float(timestamp))
-        except Exception as e:
-            print_log(
-                f'[Det3DRosPublishHook] get timestamp failed: {e}.',
-                logger='current',
-            level=logging.WARNING)
-        return rospy.Time.now()
+    # def get_bbox_time_stamp(self ,data_sample : Det3DDataSample) -> rospy.Time:
+    #     rospy = self._rospy
+    #     try:
+    #         timestamp = data_sample.metainfo.get('timestamp',None)
+    #         if timestamp is not None:
+    #             return rospy.Time.from_sec(float(timestamp))
+    #     except Exception as e:
+    #         print_log(
+    #             f'[Det3DRosPublishHook] get timestamp failed: {e}.',
+    #             logger='current',
+    #         level=logging.WARNING)
+    #     return rospy.Time.now()
     
-    def make_publish_msg(self,
-                        bboxes_3d : BaseInstance3DBoxes,
-                        labels_3d,
-                        scores_3d,
-                        data_sample : Det3DDataSample = None) -> BoundingBoxArray:
-        if bboxes_3d is None or labels_3d is None or scores_3d is None:
-            print_log('[Det3DRosPublishHook] make_publish_msg: bboxes_3d | labels_3d | scores_3d is None',logger='current',
-            level=logging.WARNING)
-            return None
-        print_log(f'INFO !! detected bboxes_3d {len(bboxes_3d)}',logger='current',level=logging.INFO)
+    # def make_publish_msg(self,
+    #                     bboxes_3d : BaseInstance3DBoxes,
+    #                     labels_3d,
+    #                     scores_3d,
+    #                     data_sample : Det3DDataSample = None) -> BoundingBoxArray:
+    #     if bboxes_3d is None or labels_3d is None or scores_3d is None:
+    #         print_log('[Det3DRosPublishHook] make_publish_msg: bboxes_3d | labels_3d | scores_3d is None',logger='current',
+    #         level=logging.WARNING)
+    #         return None
+    #     print_log(f'INFO !! detected bboxes_3d {len(bboxes_3d)}',logger='current',level=logging.INFO)
 
 
-        BoundingBbox3dArray = self._BoundingBoxArray_
-        BoundingBox = self._BoundingBox_
-        QuaternionFromEuler = self._quaternion_from_euler_
-        bbox_msg = BoundingBbox3dArray()
-        # get bbox timestamp
-        bbox_msg.header.stamp = self.get_bbox_time_stamp(data_sample)
-        self.publish_time = bbox_msg.header.stamp # publisher time : bbox equal to pcd 
-        bbox_msg.header.frame_id = self.frame_id
+    #     BoundingBbox3dArray = self._BoundingBoxArray_
+    #     BoundingBox = self._BoundingBox_
+    #     QuaternionFromEuler = self._quaternion_from_euler_
+    #     bbox_msg = BoundingBbox3dArray()
+    #     # get bbox timestamp
+    #     bbox_msg.header.stamp = self.get_bbox_time_stamp(data_sample)
+    #     self.publish_time = bbox_msg.header.stamp # publisher time : bbox equal to pcd 
+    #     bbox_msg.header.frame_id = self.frame_id
 
-        bboxes_3d_tensor = tensor2ndarray(bboxes_3d.tensor)
+    #     bboxes_3d_tensor = tensor2ndarray(bboxes_3d.tensor)
 
-        proc_count = 0
-        for box, label, score in zip(bboxes_3d, labels_3d, scores_3d):
-            center = box[0:3]
-            dims = box[3:6]
-            yaw = box[6]
-            qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, -yaw)
+    #     proc_count = 0
+    #     for box, label, score in zip(bboxes_3d, labels_3d, scores_3d):
+    #         center = box[0:3]
+    #         dims = box[3:6]
+    #         yaw = box[6]
+    #         qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, -yaw)
 
-            bbox = BoundingBox()
-            bbox.header = bbox_msg.header
-            bbox.pose.position.x = float(center[0])
-            bbox.pose.position.y = float(center[1])
-            bbox.pose.position.z = float(center[2])
+    #         bbox = BoundingBox()
+    #         bbox.header = bbox_msg.header
+    #         bbox.pose.position.x = float(center[0])
+    #         bbox.pose.position.y = float(center[1])
+    #         bbox.pose.position.z = float(center[2])
 
-            bbox.pose.orientation.x = float(qx)
-            bbox.pose.orientation.y = float(qy)
-            bbox.pose.orientation.z = float(qz)
-            bbox.pose.orientation.w = float(qw)
+    #         bbox.pose.orientation.x = float(qx)
+    #         bbox.pose.orientation.y = float(qy)
+    #         bbox.pose.orientation.z = float(qz)
+    #         bbox.pose.orientation.w = float(qw)
 
-            bbox.dimensions.x = float(dims[0])
-            bbox.dimensions.y = float(dims[1])
-            bbox.dimensions.z = float(dims[2])
+    #         bbox.dimensions.x = float(dims[0])
+    #         bbox.dimensions.y = float(dims[1])
+    #         bbox.dimensions.z = float(dims[2])
 
-            bbox.label = int(label)
-            bbox.value = float(score)
-            bbox_msg.boxes.append(bbox)
-            proc_count += 1
-        print_log(f'INFO !! published {proc_count} bboxes',logger='current',level=logging.INFO)
-        return bbox_msg
+    #         bbox.label = int(label)
+    #         bbox.value = float(score)
+    #         bbox_msg.boxes.append(bbox)
+    #         proc_count += 1
+    #     print_log(f'INFO !! published {proc_count} bboxes',logger='current',level=logging.INFO)
+    #     return bbox_msg
 
-    def make_publish_bbox(self,
-                          data_sample:Optional[Det3DDataSample] = None) -> Optional[BoundingBoxArray]:
-        if data_sample is None:
-            print_log('[Det3DRosPublishHook] make_publish_bbox: data_sample is None',logger='current',
-            level=logging.WARNING)
-            return None
-        BoundingBbox3dArray = self._BoundingBoxArray_
-        empty_msg = BoundingBbox3dArray()
-        empty_msg.header.stamp = self.get_bbox_time_stamp(data_sample)
-        empty_msg.header.frame_id = self.frame_id
+    # def make_publish_bbox(self,
+    #                       data_sample:Optional[Det3DDataSample] = None) -> Optional[BoundingBoxArray]:
+    #     if data_sample is None:
+    #         print_log('[Det3DRosPublishHook] make_publish_bbox: data_sample is None',logger='current',
+    #         level=logging.WARNING)
+    #         return None
+    #     BoundingBbox3dArray = self._BoundingBoxArray_
+    #     empty_msg = BoundingBbox3dArray()
+    #     empty_msg.header.stamp = self.get_bbox_time_stamp(data_sample)
+    #     empty_msg.header.frame_id = self.frame_id
 
-        if 'pred_instances_3d' not in data_sample:
-            print_log('ERROR !! pred_instances_3d not found in data_sample',logger='current',level=logging.WARNING)
-            return empty_msg
-        pred_instances_3d = data_sample.pred_instances_3d
+    #     if 'pred_instances_3d' not in data_sample:
+    #         print_log('ERROR !! pred_instances_3d not found in data_sample',logger='current',level=logging.WARNING)
+    #         return empty_msg
+    #     pred_instances_3d = data_sample.pred_instances_3d
 
-        # Filter predictions by score threshold
-        if hasattr(pred_instances_3d, 'scores_3d'):
-            pred_instances_3d = pred_instances_3d[pred_instances_3d.scores_3d > self.pred_score_thr].to('cpu')
+    #     # Filter predictions by score threshold
+    #     if hasattr(pred_instances_3d, 'scores_3d'):
+    #         pred_instances_3d = pred_instances_3d[pred_instances_3d.scores_3d > self.pred_score_thr].to('cpu')
 
-        bboxes_3d = getattr(pred_instances_3d,'bboxes_3d',None)# bounding box 3d
-        labels_3d = getattr(pred_instances_3d,'labels_3d',None) # label 3d
-        scores_3d = getattr(pred_instances_3d,'scores_3d',None) # score 3d
+    #     bboxes_3d = getattr(pred_instances_3d,'bboxes_3d',None)# bounding box 3d
+    #     labels_3d = getattr(pred_instances_3d,'labels_3d',None) # label 3d
+    #     scores_3d = getattr(pred_instances_3d,'scores_3d',None) # score 3d
 
-        # if isinstance(bboxes_3d,BaseInstance3DBoxes):
-        #     bbox_msg = self.make_publish_msg(bboxes_3d, labels_3d, scores_3d, data_sample)
-        bbox_msg = self.make_publish_msg(bboxes_3d, labels_3d, scores_3d, data_sample)
-        return bbox_msg        
+    #     # if isinstance(bboxes_3d,BaseInstance3DBoxes):
+    #     #     bbox_msg = self.make_publish_msg(bboxes_3d, labels_3d, scores_3d, data_sample)
+    #     bbox_msg = self.make_publish_msg(bboxes_3d, labels_3d, scores_3d, data_sample)
+    #     return bbox_msg        
 
-    def publish_bbox(self,bbox3d_msgs:Optional[BoundingBoxArray]= None):
-        if bbox3d_msgs is None:
-            print_log('[Det3DRosPublishHook] publish_bbox: bbox3d_msgs is None',logger='current',
-            level=logging.WARNING)
-            return
-        self._publisher_bbox.publish(bbox3d_msgs)
+    # def publish_bbox(self,bbox3d_msgs:Optional[BoundingBoxArray]= None):
+    #     if bbox3d_msgs is None:
+    #         print_log('[Det3DRosPublishHook] publish_bbox: bbox3d_msgs is None',logger='current',
+    #         level=logging.WARNING)
+    #         return
+    #     self._publisher_bbox.publish(bbox3d_msgs)
 
 
-    def publish_pcd(self, pcd:Union[np.ndarray,Tensor]):
-        if pcd is None:
-            print_log('ERROR: pcd is None , please check the pcd input data', logger='current', level=logging.WARNING)
-            return
+    # def publish_pcd(self, pcd:Union[np.ndarray,Tensor]):
+    #     if pcd is None:
+    #         print_log('ERROR: pcd is None , please check the pcd input data', logger='current', level=logging.WARNING)
+    #         return
 
-        if isinstance(pcd, Tensor):
-            pcd = tensor2ndarray(pcd)
-        pcd_msg = self.make_publish_pcd_msgs(pcd, frame_id = self.frame_id)
-        if pcd_msg is not None:
-            self._publisher_pcd.publish(pcd_msg)
-        else:
-            print_log('ERROR: pcd_msg is None , please check the pcd_msg input data', logger='current', level=logging.WARNING)
-            return
+    #     if isinstance(pcd, Tensor):
+    #         pcd = tensor2ndarray(pcd)
+    #     pcd_msg = self.make_publish_pcd_msgs(pcd, frame_id = self.frame_id)
+    #     if pcd_msg is not None:
+    #         self._publisher_pcd.publish(pcd_msg)
+    #     else:
+    #         print_log('ERROR: pcd_msg is None , please check the pcd_msg input data', logger='current', level=logging.WARNING)
+    #         return
 
-    def publish_filtered_pcd(self, pcd: Union[np.ndarray, Tensor]):
-        """Publish filtered pointcloud (points inside predicted boxes)."""
-        if pcd is None:
-            print_log('ERROR: filtered pcd is None', logger='current', level=logging.WARNING)
-            return
-        if isinstance(pcd, Tensor):
-            pcd = tensor2ndarray(pcd)
-        pcd_msg = self.make_publish_pcd_msgs(pcd, frame_id=self.frame_id)
-        if pcd_msg is not None:
-            self._publisher_filtered_pcd.publish(pcd_msg)
-        else:
-            print_log('ERROR: filtered pcd_msg is None', logger='current', level=logging.WARNING)
-            return
+    # def publish_filtered_pcd(self, pcd: Union[np.ndarray, Tensor]):
+    #     """Publish filtered pointcloud (points inside predicted boxes)."""
+    #     if pcd is None:
+    #         print_log('ERROR: filtered pcd is None', logger='current', level=logging.WARNING)
+    #         return
+    #     if isinstance(pcd, Tensor):
+    #         pcd = tensor2ndarray(pcd)
+    #     pcd_msg = self.make_publish_pcd_msgs(pcd, frame_id=self.frame_id)
+    #     if pcd_msg is not None:
+    #         self._publisher_filtered_pcd.publish(pcd_msg)
+    #     else:
+    #         print_log('ERROR: filtered pcd_msg is None', logger='current', level=logging.WARNING)
+    #         return
 
-    def make_publish_pcd_msgs(self , pcd : Optional[np.ndarray] = None,frame_id :str = None) -> Optional[PointCloud2]:
-        if pcd is None:
-            print_log('ERROR: pcd is None , please check the pcd input data', logger='current', level=logging.WARNING)
-            return None
+    # def make_publish_pcd_msgs(self , pcd : Optional[np.ndarray] = None,frame_id :str = None) -> Optional[PointCloud2]:
+    #     if pcd is None:
+    #         print_log('ERROR: pcd is None , please check the pcd input data', logger='current', level=logging.WARNING)
+    #         return None
 
-        point_fields = [PointField(name='x', offset=0,
-                               datatype=PointField.FLOAT32, count=1),
-                    PointField(name='y', offset=4,
-                               datatype=PointField.FLOAT32, count=1),
-                    PointField(name='z', offset=8,
-                               datatype=PointField.FLOAT32, count=1),
-                    PointField(name='intensity', offset=12,
-                               datatype=PointField.FLOAT32, count=1)]  # pcd buffer 
-        if self.publish_time is not None:
-            header = Header(frame_id=frame_id, stamp=self.publish_time) if frame_id is not None else Header(frame_id=self.frame_id, stamp=self.publish_time)
-        else:
-            header = Header(frame_id=frame_id, stamp=rospy.Time.now()) if frame_id is not None else Header(frame_id=self.frame_id, stamp=rospy.Time.now())
+    #     point_fields = [PointField(name='x', offset=0,
+    #                            datatype=PointField.FLOAT32, count=1),
+    #                 PointField(name='y', offset=4,
+    #                            datatype=PointField.FLOAT32, count=1),
+    #                 PointField(name='z', offset=8,
+    #                            datatype=PointField.FLOAT32, count=1),
+    #                 PointField(name='intensity', offset=12,
+    #                            datatype=PointField.FLOAT32, count=1)]  # pcd buffer 
+    #     if self.publish_time is not None:
+    #         header = Header(frame_id=frame_id, stamp=self.publish_time) if frame_id is not None else Header(frame_id=self.frame_id, stamp=self.publish_time)
+    #     else:
+    #         header = Header(frame_id=frame_id, stamp=rospy.Time.now()) if frame_id is not None else Header(frame_id=self.frame_id, stamp=rospy.Time.now())
         
         
-        points_byte = pcd[:, 0:4].tobytes()
-        num_points = len(pcd)
-        point_step = 16  # 4 floats * 4 bytes each = 16 bytes per point
+    #     points_byte = pcd[:, 0:4].tobytes()
+    #     num_points = len(pcd)
+    #     point_step = 16  # 4 floats * 4 bytes each = 16 bytes per point
         
-        print_log(f'INFO !! point cloud msgs make successfully for publisher !! ', logger='current', level=logging.INFO)
-        return PointCloud2(
-                        header=header,
-                        height=1,
-                        width=num_points,
-                        is_dense=False,
-                        is_bigendian=False,
-                        fields=point_fields,
-                        point_step=point_step,
-                        row_step=len(points_byte),
-                        data=points_byte)
+    #     print_log(f'INFO !! point cloud msgs make successfully for publisher !! ', logger='current', level=logging.INFO)
+    #     return PointCloud2(
+    #                     header=header,
+    #                     height=1,
+    #                     width=num_points,
+    #                     is_dense=False,
+    #                     is_bigendian=False,
+    #                     fields=point_fields,
+    #                     point_step=point_step,
+    #                     row_step=len(points_byte),
+    #                     data=points_byte)
 
 def run(init_args: dict, call_args: dict):
     try:

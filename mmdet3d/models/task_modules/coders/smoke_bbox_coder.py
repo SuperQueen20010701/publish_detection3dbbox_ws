@@ -143,8 +143,30 @@ class SMOKECoder(BaseBBoxCoder):
         N_batch = cam2imgs.shape[0]
         batch_id = torch.arange(N_batch).unsqueeze(1)
         obj_id = batch_id.repeat(1, N // N_batch).flatten()
-        trans_mats_inv = trans_mats.inverse()[obj_id]
-        cam2imgs_inv = cam2imgs.inverse()[obj_id]
+        
+        # Helper function to safely compute matrix inverse with CPU fallback
+        def safe_inverse(mat, obj_indices):
+            """Compute matrix inverse with CPU fallback if CUDA fails."""
+            try:
+                return mat.inverse()[obj_indices]
+            except RuntimeError as e:
+                error_str = str(e)
+                if 'cusolver' in error_str.lower() or 'CUSOLVER' in error_str:
+                    # Fallback to CPU for matrix inversion
+                    mat_cpu = mat.cpu()
+                    inv_cpu = mat_cpu.inverse()
+                    # Handle obj_indices - if it's on CUDA, move to CPU for indexing
+                    if obj_indices.is_cuda:
+                        obj_indices_cpu = obj_indices.cpu()
+                        result = inv_cpu[obj_indices_cpu]
+                    else:
+                        result = inv_cpu[obj_indices]
+                    return result.to(mat.device)
+                else:
+                    raise
+        
+        trans_mats_inv = safe_inverse(trans_mats, obj_id)
+        cam2imgs_inv = safe_inverse(cam2imgs, obj_id)
         centers2d = points + centers2d_offsets
         centers2d_extend = torch.cat((centers2d, centers2d.new_ones(N, 1)),
                                      dim=1)

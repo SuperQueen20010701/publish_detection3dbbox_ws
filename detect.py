@@ -13,32 +13,21 @@ def load_local_pkl(pkl_path: str,backend_args:Optional[dict] =None) ->None:
     logger: MMLogger = MMLogger.get_current_instance()
     logger.info(f'load {len(db_infos)} database infos in DataBaseSampler')
     for k,v in db_infos.items():
-        if isinstance(v,(list,tuple)):
-            logger.info(f'{k}:{type(v)},length:{len(v)}')
+        if k == 'data_list':
+            if len(v[0].keys()) == len(v[1].keys()):
+                item = v[0]
+                for key,value in item.items():
+                    logger.info(f'{key}:{type(value)}')
+                    if key == 'images':
+                        if isinstance(value,dict):
+                            if 'CAM2' in value.keys() and isinstance(value["CAM2"],dict):
+                                print(f'CAM2: {value["CAM2"].keys()}')
+                    if key == 'lidar_points':
+                        if isinstance(value,dict):
+                            print(list(value.keys()))
+                    if key == 'instances':
+                        print(f'length of instances: {len(value)}')
             logger.info('\n')
-            if v and len(v) < 5:
-                logger.info(f'{v[:]}')
-                logger.info('\n')
-            else:
-                logger.info(f'{v[:5]}')
-                logger.info('\n')
-        elif isinstance(v,dict):
-            logger.info(f'{k}:{type(v)},length:{len(v)}')
-            logger.info('\n')
-            if v and len(v) < 5:
-                logger.info(f'{list(v.keys())[:]}')
-                logger.info('\n')
-            else:
-                logger.info(f'{list(v.keys())[:5]}')
-                logger.info('\n')
-        else:
-            logger.info(f'{k}:{type(v)},length:{len(v)}')
-            logger.info('\n')
-            if v:
-                logger.info(f'{v[:1]}')
-                logger.info('\n')
-
-
 if __name__ == '__main__':
-    load_local_pkl('/kitti_data/KittiData/kitti_infos_test.pkl')
+    load_local_pkl('/src/mmdetection3d/publish_detection3dbbox_ws/data/kitti/kitti_infos_test.pkl')
         
